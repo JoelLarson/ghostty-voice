@@ -1,21 +1,29 @@
-//! ghostty-voiced — the supervising daemon (S2).
+//! ghostty-voiced — the supervising daemon (S3).
 //!
 //! Owns all state: supervises whisper-server (eager start, readiness, restart
 //! with backoff, VRAM teardown on stop), listens on a Unix socket, drives the
-//! recording state machine, and performs record/transcribe/inject. Single
-//! utterance at a time for S2; the ordered delivery queue is S3.
+//! recording state machine, and performs record/transcribe/inject.
+//!
+//! Delivery (S3): the Recorder frees on stop so recordings can be fired
+//! back-to-back; each utterance is cached as a WAV, enqueued into the ordered
+//! [`DeliveryQueue`], and transcribed in the background (retrying while the
+//! server is down). A single serialized drain caches each transcript to disk
+//! *before* typing, then auto-types it if fresh or holds it for `replay-last`
+//! if stale — strict record-order, never interleaved.
 
 mod vulkan_enum;
 
 use std::path::{Path, PathBuf};
 use std::process::Child as RecorderChild;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use ghostty_voice_core::config::{Config, expand_tilde};
+use ghostty_voice_core::delivery::Delivery;
 use ghostty_voice_core::machine::{self, Action};
 use ghostty_voice_core::protocol::{Command, ProtocolError, Response, State};
+use ghostty_voice_core::queue::DeliveryQueue;
 use ghostty_voice_core::supervisor::Backoff;
 use ghostty_voice_core::transcript::parse_transcript;
 use ghostty_voice_core::vulkan::resolve_device_index;
@@ -29,10 +37,32 @@ struct Daemon {
     state: State,
     config: Config,
     config_path: PathBuf,
-    wav_path: PathBuf,
+    /// The active recording's WAV path and the seq it will enqueue as, set on
+    /// StartRecording and consumed on StopAndEnqueue.
+    current_wav: Option<PathBuf>,
     recorder: Option<RecorderChild>,
     whisper: Option<tokio::process::Child>,
+    /// Ordered delivery queue — utterances drain in strict record-order.
+    queue: DeliveryQueue,
+    /// Monotonic base for per-utterance freshness offsets.
+    clock_base: Instant,
+    /// XDG cache root: holds `recordings/` and `transcripts/`.
+    cache_root: PathBuf,
+    /// Held true while a drain is in flight so typing never interleaves.
+    draining: bool,
     shutting_down: bool,
+}
+
+impl Daemon {
+    fn now_offset(&self) -> Duration {
+        self.clock_base.elapsed()
+    }
+    fn recordings_dir(&self) -> PathBuf {
+        self.cache_root.join("recordings")
+    }
+    fn transcripts_dir(&self) -> PathBuf {
+        self.cache_root.join("transcripts")
+    }
 }
 
 #[tokio::main(flavor = "multi_thread")]
@@ -54,9 +84,13 @@ async fn main() -> Result<()> {
         state: State::Loading,
         config,
         config_path: cfg_path,
-        wav_path: std::env::temp_dir().join("ghostty-voice-rec.wav"),
+        current_wav: None,
         recorder: None,
         whisper: None,
+        queue: DeliveryQueue::new(),
+        clock_base: Instant::now(),
+        cache_root: cache_root()?,
+        draining: false,
         shutting_down: false,
     }));
 
@@ -239,68 +273,240 @@ async fn perform(d: &mut Daemon, daemon: &Arc<Mutex<Daemon>>, action: Action) ->
     match action {
         Action::None => Ok(()),
         Action::StartRecording => {
-            let child =
-                ghostty_voice_io::audio::spawn_recorder(&d.config.audio.device, &d.wav_path)?;
+            let wav = fresh_wav_path();
+            let child = ghostty_voice_io::audio::spawn_recorder(&d.config.audio.device, &wav)?;
             d.recorder = Some(child);
+            d.current_wav = Some(wav);
+            play_start_cue(&d.config);
+            arm_recording_cap(daemon.clone(), d.config.audio.max_recording_seconds);
             Ok(())
         }
         Action::DiscardRecording => {
             if let Some(mut child) = d.recorder.take() {
                 ghostty_voice_io::audio::stop_recorder(&mut child)?;
             }
-            let _ = std::fs::remove_file(&d.wav_path);
+            if let Some(wav) = d.current_wav.take() {
+                let _ = std::fs::remove_file(&wav);
+            }
             Ok(())
         }
-        Action::StopAndTranscribe => {
-            if let Some(mut child) = d.recorder.take() {
-                ghostty_voice_io::audio::stop_recorder(&mut child)?;
-            }
-            spawn_transcription(daemon.clone(), d.config.clone(), d.wav_path.clone());
+        Action::StopAndEnqueue => {
+            stop_and_enqueue(d, daemon).await;
             Ok(())
         }
         Action::ReloadConfig => {
             d.config = load_config(&d.config_path);
             Ok(())
         }
-        Action::ReplayLast => {
-            // Wired to the transcript cache in the delivery slice; until then
-            // there is nothing cached to replay.
-            anyhow::bail!("no transcript cached to replay")
-        }
+        Action::ReplayLast => replay_last(d).await,
     }
 }
 
-fn spawn_transcription(daemon: Arc<Mutex<Daemon>>, config: Config, wav: PathBuf) {
+/// Stop the recorder, cache the WAV, enqueue the utterance with its freshness
+/// deadline, play the stop/done cue, and kick off background transcription.
+async fn stop_and_enqueue(d: &mut Daemon, daemon: &Arc<Mutex<Daemon>>) {
+    if let Some(mut child) = d.recorder.take() {
+        let _ = ghostty_voice_io::audio::stop_recorder(&mut child);
+    }
+    let Some(wav) = d.current_wav.take() else {
+        return; // no active recording (e.g. cap already fired)
+    };
+
+    // Cache the WAV (the accuracy-debugging corpus); keep the working copy too.
+    let rec_dir = d.recordings_dir();
+    let keep = d.config.cache.wav_keep;
+    if let Err(e) = ghostty_voice_io::cache::store_wav(&rec_dir, &wav, keep) {
+        warn!("could not cache recording: {e}");
+    }
+
+    let record_end = d.now_offset();
+    let seq = d.queue.enqueue_at(record_end);
+    play_stop_cue(&d.config);
+
+    spawn_transcription(daemon.clone(), seq, wav);
+}
+
+/// Background-transcribe utterance `seq`, retrying while the server is down
+/// (within the freshness window), then either mark it ready or resolve it.
+fn spawn_transcription(daemon: Arc<Mutex<Daemon>>, seq: u64, wav: PathBuf) {
     tokio::spawn(async move {
-        if let Err(e) = transcribe_and_type(&config, &wav).await {
-            error!("transcription failed: {e}");
-            notify(&format!("ghostty-voice: transcription failed — {e}"));
+        let config = daemon.lock().await.config.clone();
+        match transcribe_with_retry(&daemon, &config, &wav).await {
+            Ok(Some(transcript)) => {
+                daemon.lock().await.queue.set_ready(seq, transcript);
+            }
+            Ok(None) => {
+                // Empty/silence: the stop cue already played; type nothing.
+                info!("utterance {seq}: no speech detected — nothing typed");
+                daemon.lock().await.queue.resolve(seq);
+            }
+            Err(e) => {
+                error!("utterance {seq}: transcription failed: {e}");
+                notify("ghostty-voice: transcription failed — recording kept, re-speak");
+                daemon.lock().await.queue.resolve(seq);
+            }
         }
-        set_state(&daemon, State::Idle).await;
+        let _ = std::fs::remove_file(&wav);
+        drain_queue(&daemon).await;
     });
 }
 
-async fn transcribe_and_type(config: &Config, wav: &Path) -> Result<()> {
+/// POST the WAV to whisper-server, retrying while it is unreachable (a
+/// mid-restart hiccup) until it comes back or the freshness window elapses.
+/// `Ok(None)` means an empty/silence transcript.
+async fn transcribe_with_retry(
+    daemon: &Arc<Mutex<Daemon>>,
+    config: &Config,
+    wav: &Path,
+) -> Result<Option<String>> {
     let host = config.whisper.host.clone();
     let port = config.whisper.port;
-    let wav_owned = wav.to_path_buf();
-    let body = tokio::task::spawn_blocking(move || {
-        ghostty_voice_io::transcribe::post_inference(&host, port, &wav_owned)
-    })
-    .await??;
+    let window = Duration::from_secs(config.cache.retry_window_seconds);
+    let started = Instant::now();
 
-    let transcript = parse_transcript(&body).map_err(|e| anyhow::anyhow!("parse: {e:?}"))?;
-    if transcript.is_empty() {
-        info!("no speech detected — nothing typed");
-        return Ok(());
+    loop {
+        let (h, p, w) = (host.clone(), port, wav.to_path_buf());
+        let result = tokio::task::spawn_blocking(move || {
+            ghostty_voice_io::transcribe::post_inference(&h, p, &w)
+        })
+        .await?;
+
+        match result {
+            Ok(body) => {
+                let transcript =
+                    parse_transcript(&body).map_err(|e| anyhow::anyhow!("parse: {e:?}"))?;
+                return Ok((!transcript.is_empty()).then_some(transcript));
+            }
+            Err(e) => {
+                if started.elapsed() >= window || daemon.lock().await.shutting_down {
+                    return Err(e.context("whisper-server unreachable past the retry window"));
+                }
+                warn!("whisper-server unreachable, retrying: {e}");
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+        }
+    }
+}
+
+/// Drain the delivery queue head-first, serialized so utterances never
+/// interleave: cache each transcript to disk *before* typing, then auto-type if
+/// fresh or hold-for-replay if stale. Only one drain runs at a time.
+async fn drain_queue(daemon: &Arc<Mutex<Daemon>>) {
+    {
+        let mut d = daemon.lock().await;
+        if d.draining {
+            return; // another drain is already advancing the queue
+        }
+        d.draining = true;
     }
 
-    let key_delay = config.inject.key_delay_ms;
-    tokio::task::spawn_blocking(move || {
-        ghostty_voice_io::inject::type_text(&transcript, key_delay)
-    })
-    .await??;
+    loop {
+        // Decide the next action while holding the lock, then release it to do IO.
+        let next = {
+            let d = daemon.lock().await;
+            let now = d.now_offset();
+            let window = Duration::from_secs(d.config.cache.retry_window_seconds);
+            d.queue
+                .head_delivery(now, window)
+                .map(|(seq, transcript, delivery)| {
+                    (
+                        seq,
+                        transcript.to_owned(),
+                        delivery,
+                        d.transcripts_dir(),
+                        d.config.cache.transcript_keep,
+                        d.config.inject.key_delay_ms,
+                    )
+                })
+        };
+
+        let Some((seq, transcript, delivery, tdir, tkeep, key_delay)) = next else {
+            break; // head is pending or queue is empty
+        };
+
+        // Cache the transcript BEFORE typing, so delivery survives a type fail.
+        if let Err(e) = ghostty_voice_io::cache::store_transcript(&tdir, &transcript, tkeep) {
+            warn!("could not cache transcript: {e}");
+        }
+
+        match delivery {
+            Delivery::AutoType => {
+                let text = transcript.clone();
+                let typed = tokio::task::spawn_blocking(move || {
+                    ghostty_voice_io::inject::type_text(&text, key_delay)
+                })
+                .await;
+                match typed {
+                    Ok(Ok(())) => info!("utterance {seq}: auto-typed"),
+                    Ok(Err(e)) => {
+                        // Typing failed (e.g. ydotoold down). The transcript is
+                        // already cached, so recover with `replay-last`.
+                        error!("utterance {seq}: type failed: {e}");
+                        notify("ghostty-voice: type failed — run `replay-last` after refocusing");
+                    }
+                    Err(join) => error!("utterance {seq}: type task panicked: {join}"),
+                }
+            }
+            Delivery::HoldForReplay => {
+                info!("utterance {seq}: held for replay (stale)");
+                notify("ghostty-voice: transcript held — run `replay-last` after refocusing");
+            }
+        }
+
+        daemon.lock().await.queue.resolve(seq);
+    }
+
+    daemon.lock().await.draining = false;
+}
+
+/// Re-inject the most-recent cached transcript (recovery-only).
+async fn replay_last(d: &Daemon) -> Result<()> {
+    let dir = d.transcripts_dir();
+    let key_delay = d.config.inject.key_delay_ms;
+    let Some(text) = ghostty_voice_io::cache::latest_transcript(&dir)? else {
+        anyhow::bail!("no transcript cached to replay");
+    };
+    tokio::task::spawn_blocking(move || ghostty_voice_io::inject::type_text(&text, key_delay))
+        .await??;
     Ok(())
+}
+
+/// Arm the runaway-recording cap: after `seconds`, if still recording the same
+/// utterance, stop + enqueue it (preserving speech) and notify.
+fn arm_recording_cap(daemon: Arc<Mutex<Daemon>>, seconds: u64) {
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(seconds)).await;
+        let mut d = daemon.lock().await;
+        if d.recorder.is_some() {
+            warn!("max_recording_seconds reached — stopping and enqueueing");
+            notify("ghostty-voice: recording hit the time cap — stopped and queued");
+            let dc = daemon.clone();
+            stop_and_enqueue(&mut d, &dc).await;
+            d.state = State::Idle;
+        }
+    });
+}
+
+fn fresh_wav_path() -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "ghostty-voice-rec-{}-{}.wav",
+        std::process::id(),
+        Instant::now().elapsed().as_nanos()
+    ))
+}
+
+fn play_start_cue(config: &Config) {
+    let sound = config.feedback.sound_start.clone();
+    tokio::spawn(async move {
+        let _ = tokio::task::spawn_blocking(move || ghostty_voice_io::cue::play(&sound)).await;
+    });
+}
+
+fn play_stop_cue(config: &Config) {
+    let sound = config.feedback.sound_stop.clone();
+    tokio::spawn(async move {
+        let _ = tokio::task::spawn_blocking(move || ghostty_voice_io::cue::play(&sound)).await;
+    });
 }
 
 // ---- helpers ---------------------------------------------------------------
@@ -330,6 +536,15 @@ fn load_config(path: &std::path::Path) -> Config {
 fn socket_path() -> Result<PathBuf> {
     let dir = std::env::var("XDG_RUNTIME_DIR").context("XDG_RUNTIME_DIR is not set")?;
     Ok(PathBuf::from(dir).join("ghostty-voice.sock"))
+}
+
+/// `$XDG_CACHE_HOME/ghostty-voice/` (falling back to `~/.cache/...`).
+fn cache_root() -> Result<PathBuf> {
+    if let Ok(dir) = std::env::var("XDG_CACHE_HOME") {
+        return Ok(PathBuf::from(dir).join("ghostty-voice"));
+    }
+    let home = std::env::var("HOME").context("neither XDG_CACHE_HOME nor HOME is set")?;
+    Ok(PathBuf::from(home).join(".cache/ghostty-voice"))
 }
 
 fn health_check_ydotoold() {

@@ -1,4 +1,9 @@
-//! The daemon's recording state machine (S2, single-utterance).
+//! The daemon's recording state machine (S3 — Recorder + delivery queue).
+//!
+//! The Recorder is the single mic facility: `Idle` or `Recording`. Stopping a
+//! recording enqueues the utterance and returns to `Idle` immediately, so a new
+//! recording can start while prior utterances transcribe and type through the
+//! ordered delivery queue (which the daemon drains, serialized, in record-order).
 //!
 //! A pure function from (current [`State`], [`Command`]) to a [`Transition`]:
 //! the next state, the side-effecting [`Action`] the daemon must perform, and
@@ -11,7 +16,10 @@ use crate::protocol::{Command, Response, State};
 pub enum Action {
     None,
     StartRecording,
-    StopAndTranscribe,
+    /// Stop the recorder, enqueue the utterance, and kick off background
+    /// transcription — the recorder is freed (Idle) so the next recording can
+    /// start while this one drains through the delivery queue.
+    StopAndEnqueue,
     DiscardRecording,
     ReloadConfig,
     /// Re-inject the most-recent cached transcript (recovery-only, S3).
@@ -50,8 +58,10 @@ pub fn apply(state: State, command: Command) -> Transition {
         (State::Loading, _) => reject(State::Loading, "model still loading"),
 
         (State::Idle, Command::Toggle) => go(State::Recording, Action::StartRecording),
-        (State::Recording, Command::Toggle) => go(State::Transcribing, Action::StopAndTranscribe),
-        (State::Transcribing, Command::Toggle) => go(State::Transcribing, Action::None),
+        (State::Recording, Command::Toggle) => go(State::Idle, Action::StopAndEnqueue),
+        // The recorder is freed on stop, so it is never in Transcribing when a
+        // toggle arrives; treat any stray case as starting a fresh recording.
+        (State::Transcribing, Command::Toggle) => go(State::Recording, Action::StartRecording),
 
         (State::Recording, Command::Cancel) => go(State::Idle, Action::DiscardRecording),
         (s, Command::Cancel) => go(s, Action::None),
@@ -78,17 +88,23 @@ mod tests {
     }
 
     #[test]
-    fn toggle_stops_and_transcribes_from_recording() {
+    fn toggle_stops_and_enqueues_then_frees_the_recorder() {
+        // The Recorder + delivery queue model: stopping enqueues the utterance
+        // and returns to Idle so a new recording can start immediately while
+        // the prior one transcribes/types in the background.
         let t = apply(State::Recording, Command::Toggle);
-        assert_eq!(t.next, State::Transcribing);
-        assert_eq!(t.action, Action::StopAndTranscribe);
+        assert_eq!(t.next, State::Idle);
+        assert_eq!(t.action, Action::StopAndEnqueue);
     }
 
     #[test]
-    fn toggle_is_ignored_while_transcribing() {
-        let t = apply(State::Transcribing, Command::Toggle);
-        assert_eq!(t.next, State::Transcribing);
-        assert_eq!(t.action, Action::None);
+    fn a_new_recording_can_start_while_prior_utterances_transcribe() {
+        // After stop->Idle, another toggle starts recording again — back-to-back
+        // dictation without waiting for the queue to drain.
+        let stopped = apply(State::Recording, Command::Toggle);
+        let restarted = apply(stopped.next, Command::Toggle);
+        assert_eq!(restarted.next, State::Recording);
+        assert_eq!(restarted.action, Action::StartRecording);
     }
 
     #[test]
