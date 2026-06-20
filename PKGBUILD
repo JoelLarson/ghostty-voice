@@ -10,7 +10,7 @@ license=('custom:unlicensed')
 # wl-clipboard, libnotify(->notify-send), Vulkan ICD loader (GPU offload),
 # libcanberra(->canberra-gtk-play) for the default theme-event cues.
 depends=('ydotool' 'pipewire' 'sox' 'wl-clipboard' 'libnotify' 'vulkan-icd-loader' 'libcanberra')
-makedepends=('cargo' 'cmake' 'git' 'vulkan-headers')
+makedepends=('cargo' 'cmake' 'git' 'vulkan-headers' 'spirv-headers' 'spirv-tools' 'glslang' 'shaderc')
 optdepends=('vulkan-tools: vulkaninfo, to confirm RADV sees your GPU'
             'sound-theme-freedesktop: theme sounds for the default audio cues')
 install="${pkgname}.install"
