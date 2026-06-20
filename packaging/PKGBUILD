@@ -1,6 +1,6 @@
 # Maintainer: Joel Larson
 pkgname=ghostty-voice
-pkgver=0.1.3
+pkgver=0.1.4
 pkgrel=1
 pkgdesc="Voice dictation into the focused Ghostty terminal (GNOME/Wayland), local Whisper over Vulkan"
 arch=('x86_64')
@@ -9,7 +9,7 @@ license=('custom:unlicensed')
 # Runtime deps: ydotool(->ydotoold) injection, pipewire(->pw-record) + sox capture,
 # wl-clipboard, libnotify(->notify-send), Vulkan ICD loader (GPU offload),
 # libcanberra(->canberra-gtk-play) for the default theme-event cues.
-depends=('ydotool' 'pipewire' 'sox' 'wl-clipboard' 'libnotify' 'vulkan-icd-loader' 'libcanberra')
+depends=('ydotool' 'pipewire' 'sox' 'wl-clipboard' 'libnotify' 'vulkan-icd-loader' 'libcanberra' 'openssl')
 makedepends=('cargo' 'cmake' 'git' 'vulkan-headers' 'spirv-headers' 'spirv-tools' 'glslang' 'shaderc')
 optdepends=('vulkan-tools: vulkaninfo, to confirm RADV sees your GPU'
             'sound-theme-freedesktop: theme sounds for the default audio cues')
