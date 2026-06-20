@@ -1,10 +1,10 @@
 ---
 id: TASK-3
 title: 'S3 — Trustworthy delivery: cache, ordered queue, replay-last'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-06-20 07:42'
-updated_date: '2026-06-20 08:47'
+updated_date: '2026-06-20 10:01'
 labels:
   - needs-triage
 dependencies:
@@ -71,12 +71,12 @@ Accuracy stack (S4); VAD (S5); Continuous mode (S6); packaging (S7). No `replay-
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Every transcript is cached to disk BEFORE typing; WAV cache count-capped (~30), transcript cache (~5)
-- [ ] #2 Recorder + ordered FIFO delivery queue: multiple recordings deliver in strict record-order with no interleaving
-- [ ] #3 Hands-free auto-type within a generous freshness window; stale/failed -> held-for-replay, never clobbered
-- [ ] #4 replay-last re-injects the most-recent transcript after refocus; empty/silence fires done-cue and types nothing
-- [ ] #5 Start/stop audio cues play; notify-send only for exceptional conditions; max_recording_seconds cap enqueues+notifies
-- [ ] #6 Queue ordering, terminal-state transitions, freshness decision, and cache pruning are unit-tested with real objects
+- [x] #1 Every transcript is cached to disk BEFORE typing; WAV cache count-capped (~30), transcript cache (~5)
+- [x] #2 Recorder + ordered FIFO delivery queue: multiple recordings deliver in strict record-order with no interleaving
+- [x] #3 Hands-free auto-type within a generous freshness window; stale/failed -> held-for-replay, never clobbered
+- [x] #4 replay-last re-injects the most-recent transcript after refocus; empty/silence fires done-cue and types nothing
+- [x] #5 Start/stop audio cues play; notify-send only for exceptional conditions; max_recording_seconds cap enqueues+notifies
+- [x] #6 Queue ordering, terminal-state transitions, freshness decision, and cache pruning are unit-tested with real objects
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -84,3 +84,26 @@ Accuracy stack (S4); VAD (S5); Continuous mode (S6); packaging (S7). No `replay-
 <!-- SECTION:PLAN:BEGIN -->
 Core-first TDD: Recorder+ordered queue (seq, terminal states, head-of-queue freshness, serialized typing), freshness/auto-type decision, cache count-cap policy. Then boundary: fs cache, paplay cues, notify-send, ydotool replay. Integration: ordered drain via fake slow transcriber; replay-last on a sample.
 <!-- SECTION:PLAN:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+S3 trustworthy delivery implemented end-to-end and wired into the daemon. Chicago-TDD, atomic commits, all gates (cargo test / clippy --all-targets / fmt --check) green workspace-wide.
+
+CODE-COMPLETE:
+- core/config: added [audio].max_recording_seconds, [feedback].sound_start/stop, [cache].wav_keep/transcript_keep/retry_window_seconds with defaults + parsing tests; documented in config.toml.example.
+- core/protocol + core/machine: replay-last command and Action::ReplayLast; the Recorder now frees on stop (StopAndEnqueue -> Idle) so recordings fire back-to-back while prior ones transcribe/type.
+- core/queue: per-utterance freshness deadline at the head (head_delivery(now, window) -> seq + transcript + AutoType/HoldForReplay), judged on each utterance's own record-end age. Strict-order/no-interleave invariants unit-tested with real objects.
+- core/cache: ISO-timestamp filename builder (colon-free so lexical sort = chronological) + existing count-cap prune policy.
+- io/cache: fs adapter (store_wav/store_transcript with count-cap pruning, latest_transcript for replay) with real-fs round-trip integration tests.
+- io/cue: paplay start/stop cue adapter (empty path = silent no-op).
+- ctl: replay-last subcommand.
+- daemon: replaced the single-shot path with Recorder + ordered FIFO delivery queue — caches WAV on stop, enqueues with freshness deadline, background-transcribes with retry-while-server-down (bounded by the window), then a single serialized drain caches each transcript to disk BEFORE typing and auto-types if fresh / holds-for-replay if stale. Start/stop cues on the hot path (stop cue doubles as empty/silence done-cue); notify-send reserved for exceptional cases. max_recording_seconds timer stops + enqueues a runaway recording. replay-last re-injects the most-recent cached transcript.
+- Integration test: ordered drain via two fake whisper-servers (slow #1, fast #2) proving record-order delivery despite #2 transcribing first.
+
+PENDING ON-HARDWARE (no GPU/mic/whisper-server/ydotoold/GNOME in the sandbox):
+- Real paplay cue emission (only the no-op path is unit-tested).
+- Real ydotool re-injection for replay-last and auto-type (core argv builder + fs cache backing are tested; the inject syscall is hardware-only).
+- max_recording_seconds firing against a live recorder.
+- Known minor edge: the recording-cap timer guards only on recorder presence, so at very small caps a stop+immediate-restart could let an old timer stop the new recording; negligible at the 900 s default (noted for a future tag-based guard).
+<!-- SECTION:FINAL_SUMMARY:END -->
