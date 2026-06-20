@@ -16,6 +16,17 @@ const HALLUCINATIONS: &[&str] = &[
     ".",
 ];
 
+/// Whisper's native capture format: 16 kHz, mono, signed-16-bit PCM.
+const SAMPLE_RATE_HZ: u64 = 16_000;
+const BYTES_PER_SAMPLE: u64 = 2;
+
+/// Duration of `data_bytes` of 16 kHz mono s16 PCM. Lets the daemon derive a
+/// recording's length from the WAV `data` chunk size without a WAV decoder.
+pub fn pcm_duration(data_bytes: u64) -> Duration {
+    let samples = data_bytes / BYTES_PER_SAMPLE;
+    Duration::from_nanos(samples * 1_000_000_000 / SAMPLE_RATE_HZ)
+}
+
 /// Should this transcript be discarded (typed as nothing)?
 pub fn should_discard(transcript: &str, audio_duration: Duration, min_duration: Duration) -> bool {
     if audio_duration < min_duration {
@@ -60,5 +71,24 @@ mod tests {
     #[test]
     fn real_speech_of_adequate_length_is_kept() {
         assert!(!should_discard("rebase onto main", OK, MIN));
+    }
+
+    #[test]
+    fn pcm_duration_one_second_is_16k_samples() {
+        // 16000 samples * 2 bytes = 32000 bytes per second.
+        assert_eq!(pcm_duration(32_000), Duration::from_secs(1));
+    }
+
+    #[test]
+    fn pcm_duration_below_min_flags_discard() {
+        // 0.2 s of audio (6400 bytes) is under the 0.3 s minimum.
+        let dur = pcm_duration(6_400);
+        assert!(dur < MIN);
+        assert!(should_discard("a real word", dur, MIN));
+    }
+
+    #[test]
+    fn pcm_duration_empty_is_zero() {
+        assert_eq!(pcm_duration(0), Duration::ZERO);
     }
 }

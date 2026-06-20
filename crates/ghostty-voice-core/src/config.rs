@@ -5,10 +5,11 @@
 //! out); reading the file and expanding `~` happen at the IO boundary.
 
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// Top-level configuration.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub whisper: WhisperConfig,
@@ -16,10 +17,14 @@ pub struct Config {
     pub inject: InjectConfig,
     pub feedback: FeedbackConfig,
     pub cache: CacheConfig,
+    /// `[corrections]` — deterministic jargon spell-fixer (`"why do tool" =
+    /// "ydotool"`). A TOML table of `misheard = correct` pairs.
+    pub corrections: BTreeMap<String, String>,
 }
 
-/// `[whisper]` — how to reach and pin the transcription server.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+/// `[whisper]` — how to reach and pin the transcription server, plus the
+/// accuracy-stack request params (S4).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct WhisperConfig {
     /// whisper-server binary (path or name on PATH); config so an upstream
@@ -33,16 +38,29 @@ pub struct WhisperConfig {
     pub vulkan_device: String,
     /// Extra launch flags passed through to whisper-server.
     pub extra_args: Vec<String>,
+    /// Decoder beam width (S4): larger beam buys accuracy on ambiguous audio.
+    pub beam_size: u32,
+    /// Sampling temperature (S4): `0.0` for deterministic decoding.
+    pub temperature: f64,
+    /// `initial_prompt` prefix sentence; the `vocab` terms are appended after
+    /// `" Vocabulary:"` by the bounded prompt builder.
+    pub prompt_prefix: String,
+    /// Domain vocab biased into the decoder via `initial_prompt`. Grows as
+    /// misses are noticed; bounded to the token cap by the prompt builder.
+    pub vocab: Vec<String>,
 }
 
 /// `[audio]` — capture device selection and the runaway-recording cap.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AudioConfig {
     pub device: String,
     /// Safety cap (~900 s): on expiry the recorder stops + enqueues so a
     /// forgotten recording can't run away. Also backstops a VAD "never speak".
     pub max_recording_seconds: u64,
+    /// Recordings shorter than this are discarded (accidental blips type
+    /// nothing). Default 0.3 s.
+    pub min_duration_seconds: f64,
 }
 
 /// `[inject]` — `ydotool` typing behavior.
@@ -86,6 +104,10 @@ impl Default for WhisperConfig {
             model_path: "~/.local/share/ghostty-voice/models/ggml-large-v3.bin".to_owned(),
             vulkan_device: "0000:03:00.0".to_owned(),
             extra_args: Vec::new(),
+            beam_size: 8,
+            temperature: 0.0,
+            prompt_prefix: "Transcript of technical instructions.".to_owned(),
+            vocab: Vec::new(),
         }
     }
 }
@@ -95,6 +117,7 @@ impl Default for AudioConfig {
         Self {
             device: "default".to_owned(),
             max_recording_seconds: 900,
+            min_duration_seconds: 0.3,
         }
     }
 }
@@ -155,8 +178,17 @@ mod tests {
         assert_eq!(cfg.whisper.extra_args, Vec::<String>::new());
         assert_eq!(cfg.whisper.host, "127.0.0.1");
         assert_eq!(cfg.whisper.port, 8910);
+        assert_eq!(cfg.whisper.beam_size, 8);
+        assert_eq!(cfg.whisper.temperature, 0.0);
+        assert_eq!(
+            cfg.whisper.prompt_prefix,
+            "Transcript of technical instructions."
+        );
+        assert_eq!(cfg.whisper.vocab, Vec::<String>::new());
         assert_eq!(cfg.audio.device, "default");
         assert_eq!(cfg.audio.max_recording_seconds, 900);
+        assert_eq!(cfg.audio.min_duration_seconds, 0.3);
+        assert!(cfg.corrections.is_empty());
         assert_eq!(cfg.inject.key_delay_ms, 12);
         assert_eq!(cfg.feedback.sound_start, "");
         assert_eq!(cfg.feedback.sound_stop, "");
@@ -181,10 +213,15 @@ host = "0.0.0.0"
 port = 9001
 model_path = "/models/x.bin"
 vulkan_device = "0000:1a:00.0"
+beam_size = 5
+temperature = 0.2
+prompt_prefix = "Custom prefix."
+vocab = ["ydotool", "Ghostty", "kubectl"]
 
 [audio]
 device = "alsa_input.pci-0000_03_00"
 max_recording_seconds = 600
+min_duration_seconds = 0.5
 
 [inject]
 key_delay_ms = 20
@@ -197,14 +234,25 @@ sound_stop = "/usr/share/ghostty-voice/stop.wav"
 wav_keep = 50
 transcript_keep = 8
 retry_window_seconds = 1200
+
+[corrections]
+"why do tool" = "ydotool"
+"ghosty" = "Ghostty"
 "#;
         let cfg = Config::from_toml_str(toml).unwrap();
         assert_eq!(cfg.whisper.host, "0.0.0.0");
         assert_eq!(cfg.whisper.port, 9001);
         assert_eq!(cfg.whisper.model_path, "/models/x.bin");
         assert_eq!(cfg.whisper.vulkan_device, "0000:1a:00.0");
+        assert_eq!(cfg.whisper.beam_size, 5);
+        assert_eq!(cfg.whisper.temperature, 0.2);
+        assert_eq!(cfg.whisper.prompt_prefix, "Custom prefix.");
+        assert_eq!(cfg.whisper.vocab, vec!["ydotool", "Ghostty", "kubectl"]);
         assert_eq!(cfg.audio.device, "alsa_input.pci-0000_03_00");
         assert_eq!(cfg.audio.max_recording_seconds, 600);
+        assert_eq!(cfg.audio.min_duration_seconds, 0.5);
+        assert_eq!(cfg.corrections.get("why do tool").unwrap(), "ydotool");
+        assert_eq!(cfg.corrections.get("ghosty").unwrap(), "Ghostty");
         assert_eq!(cfg.inject.key_delay_ms, 20);
         assert_eq!(
             cfg.feedback.sound_start,

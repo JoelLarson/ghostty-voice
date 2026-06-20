@@ -5,6 +5,18 @@
 //! NOT a code-symbol munger. Apply order is the caller's (longest-first is
 //! recommended so phrases win over their substrings).
 
+use std::collections::BTreeMap;
+
+/// Flatten a `[corrections]` table into an ordered `(from, to)` list, sorted
+/// **longest-key-first** (ties broken alphabetically for determinism) so a
+/// multi-word phrase rule fires before any of its single-word substrings.
+pub fn ordered_corrections(table: &BTreeMap<String, String>) -> Vec<(String, String)> {
+    let mut pairs: Vec<(String, String)> =
+        table.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    pairs.sort_by(|a, b| b.0.len().cmp(&a.0.len()).then_with(|| a.0.cmp(&b.0)));
+    pairs
+}
+
 /// Apply each `(from, to)` correction to `text`, in the given order.
 pub fn apply_corrections(text: &str, corrections: &[(String, String)]) -> String {
     let mut out = text.to_owned();
@@ -92,5 +104,32 @@ mod tests {
     #[test]
     fn no_corrections_is_identity() {
         assert_eq!(apply_corrections("untouched text", &[]), "untouched text");
+    }
+
+    #[test]
+    fn ordered_corrections_sorts_longest_key_first() {
+        let mut table = BTreeMap::new();
+        table.insert("git".to_owned(), "GIT".to_owned());
+        table.insert("git stash".to_owned(), "stash-changes".to_owned());
+        let ordered = ordered_corrections(&table);
+        // The longer phrase key must come first so it wins over its substring.
+        assert_eq!(ordered[0].0, "git stash");
+        assert_eq!(ordered[1].0, "git");
+        // Applied longest-first, the phrase rule consumes "git stash" wholesale.
+        assert_eq!(
+            apply_corrections("git stash now", &ordered),
+            "stash-changes now"
+        );
+    }
+
+    #[test]
+    fn ordered_corrections_is_deterministic_on_ties() {
+        let mut table = BTreeMap::new();
+        table.insert("bbb".to_owned(), "2".to_owned());
+        table.insert("aaa".to_owned(), "1".to_owned());
+        let ordered = ordered_corrections(&table);
+        // Equal-length keys break ties alphabetically.
+        assert_eq!(ordered[0].0, "aaa");
+        assert_eq!(ordered[1].0, "bbb");
     }
 }
