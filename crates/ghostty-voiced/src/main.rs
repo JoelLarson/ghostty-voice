@@ -488,10 +488,14 @@ fn arm_recording_cap(daemon: Arc<Mutex<Daemon>>, seconds: u64) {
 }
 
 fn fresh_wav_path() -> PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
     std::env::temp_dir().join(format!(
         "ghostty-voice-rec-{}-{}.wav",
         std::process::id(),
-        Instant::now().elapsed().as_nanos()
+        nanos
     ))
 }
 
