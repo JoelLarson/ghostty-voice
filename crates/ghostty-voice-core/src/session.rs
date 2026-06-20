@@ -267,6 +267,95 @@ mod tests {
         assert_eq!(s.assembled(), "hello there general kenobi");
     }
 
+    // ---- end-to-end pure pipeline ---------------------------------------
+
+    /// Drive the whole pure clip pipeline with real objects: a segmented session
+    /// (clip durations + the words spoken in each clip) is min-clip-accumulated
+    /// into transcription groups, each group is "transcribed" in strict order by
+    /// a real fake transcriber that also records the chained prompt it was given,
+    /// and the Session assembles the result. Proves ordered, gap-free assembly
+    /// and prev-tail prompt chaining end to end (AC #2, #4, #5).
+    #[test]
+    fn pipeline_accumulates_transcribes_in_order_and_assembles() {
+        // A 4-clip session; clip 1 (idx 0) is a 0.8 s stutter that must fold into
+        // clip 2 so Whisper never sees a lone fragment.
+        let durations = [
+            Duration::from_millis(800),
+            Duration::from_secs(3),
+            Duration::from_secs(2),
+            Duration::from_secs(4),
+        ];
+        // The audio each clip carries (the stutter clip 0 is just "so").
+        let spoken = [
+            "so",
+            "now rebase onto main",
+            "then run the tests",
+            "and push",
+        ];
+
+        let groups = accumulate_clips(&durations, Duration::from_secs(2));
+        assert_eq!(groups, vec![vec![0, 1], vec![2], vec![3]]);
+
+        // A real fake transcriber: returns the concatenated audio of a group,
+        // and asserts each call after the first received a non-empty chained
+        // prompt (the running transcript tail).
+        let mut session = Session::new(3);
+        let mut prompts_seen = Vec::new();
+        for group in &groups {
+            let prompt = session.prompt_for_next();
+            prompts_seen.push(prompt.clone());
+            let group_audio: String = group
+                .iter()
+                .map(|&i| spoken[i])
+                .collect::<Vec<_>>()
+                .join(" ");
+            // (the "transcriber" is the identity over the spoken audio here)
+            session.push_clip(&group_audio);
+        }
+
+        // Strict record-order assembly, gap-free, with the stutter folded in.
+        assert_eq!(
+            session.assembled(),
+            "so now rebase onto main then run the tests and push",
+        );
+        // First group has no prior context; later groups are seeded with the
+        // last 3 words of everything transcribed so far.
+        assert_eq!(prompts_seen[0], "");
+        assert_eq!(prompts_seen[1], "rebase onto main"); // tail of "so now rebase onto main"
+        assert_eq!(prompts_seen[2], "run the tests"); // tail of "...then run the tests"
+        assert_eq!(session.clip_count(), 3);
+    }
+
+    /// On session end the assembled transcript is delivered exactly once: it is
+    /// enqueued ready into the delivery queue and drains in a single head pop,
+    /// after which the queue is empty (no duplicate delivery). Real DeliveryQueue
+    /// (no mock) — the same path end_continuous drives in the daemon (AC #3).
+    #[test]
+    fn assembled_session_delivers_exactly_once_through_the_queue() {
+        use crate::queue::DeliveryQueue;
+
+        let mut session = Session::new(3);
+        session.push_clip("rebase onto main");
+        session.push_clip("then push");
+        let assembled = session.assembled();
+        assert_eq!(assembled, "rebase onto main then push");
+
+        let mut q = DeliveryQueue::new();
+        let seq = q.enqueue_at(Duration::ZERO);
+        q.set_ready(seq, assembled.clone());
+
+        // One delivery: the head is ready -> deliver -> resolve -> queue empty.
+        let (head_seq, text) = q.next_to_type().expect("a ready head to deliver");
+        assert_eq!(head_seq, seq);
+        assert_eq!(text, assembled);
+        q.resolve(head_seq);
+        assert!(
+            q.is_empty(),
+            "delivered exactly once, nothing left to redeliver"
+        );
+        assert_eq!(q.next_to_type(), None);
+    }
+
     #[test]
     fn short_pause_continues_the_clip() {
         assert_eq!(
