@@ -9,8 +9,9 @@ ghostty-voice-core = { path = "../ghostty-voice-core" }
 anyhow = "1.0.102"
 chrono = { version = "0.4.40", default-features = false, features = ["clock"] }
 nix = { version = "0.31.3", features = ["signal"] }
-# rustls: pure-Rust TLS compiled into the binary for the HTTPS model download
-# (HuggingFace) — no external program, no system OpenSSL. The whisper transport
-# itself is plain localhost HTTP.
-reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "multipart", "rustls"] }
+# native-tls links the system OpenSSL (a base library on Arch) for the HTTPS
+# model download — no external program (curl) and no bundled C crypto build
+# (rustls' aws-lc-rs fails to link under Arch's rust-lld release toolchain).
+# The whisper transport itself is plain localhost HTTP.
+reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "multipart", "native-tls"] }
 sha2 = "0.11.0"
