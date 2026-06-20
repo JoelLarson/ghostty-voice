@@ -6,5 +6,6 @@
 
 pub mod audio;
 pub mod cache;
+pub mod cue;
 pub mod inject;
 pub mod transcribe;
