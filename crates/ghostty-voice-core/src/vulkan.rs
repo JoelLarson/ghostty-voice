@@ -153,4 +153,27 @@ mod tests {
             Err(ResolveError::DeviceNotFound { target }),
         );
     }
+
+    #[test]
+    fn duplicate_address_is_ambiguous() {
+        // The enumeration boundary should never produce this; if it does
+        // (e.g. a parsing bug), fail loudly rather than silently pick one.
+        let target = pci("0000:03:00.0");
+        let devices = vec![
+            VulkanDevice {
+                index: 0,
+                name: "first".to_owned(),
+                pci_address: target,
+            },
+            VulkanDevice {
+                index: 1,
+                name: "second".to_owned(),
+                pci_address: target,
+            },
+        ];
+        assert_eq!(
+            resolve_device_index(&devices, target),
+            Err(ResolveError::AmbiguousMatch { target, count: 2 }),
+        );
+    }
 }
