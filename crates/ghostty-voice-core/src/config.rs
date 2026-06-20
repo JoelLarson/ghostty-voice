@@ -34,6 +34,12 @@ pub struct WhisperConfig {
     pub port: u16,
     /// Raw path; may begin with `~` (expanded at the IO boundary).
     pub model_path: String,
+    /// First-run download source (S7): where `ggml-large-v3.bin` is fetched
+    /// from if `model_path` is missing. Defaults to the HuggingFace LFS object.
+    pub model_url: String,
+    /// First-run download integrity (S7): expected SHA-256 of the model file
+    /// (lowercase hex), or empty to skip verification. Pin from HuggingFace.
+    pub model_sha256: String,
     /// PCI address of the GPU to pin (ADR-0001).
     pub vulkan_device: String,
     /// Extra launch flags passed through to whisper-server.
@@ -120,6 +126,8 @@ impl Default for WhisperConfig {
             host: "127.0.0.1".to_owned(),
             port: 8910,
             model_path: "~/.local/share/ghostty-voice/models/ggml-large-v3.bin".to_owned(),
+            model_url: crate::model::GGML_LARGE_V3_URL.to_owned(),
+            model_sha256: crate::model::GGML_LARGE_V3_SHA256.to_owned(),
             vulkan_device: "0000:03:00.0".to_owned(),
             extra_args: Vec::new(),
             beam_size: 8,
@@ -208,6 +216,13 @@ mod tests {
             "Transcript of technical instructions."
         );
         assert_eq!(cfg.whisper.vocab, Vec::<String>::new());
+        // First-run download (S7): the model URL defaults to the HF LFS object,
+        // and the expected SHA is unset (verification deferred until pinned).
+        assert_eq!(
+            cfg.whisper.model_url,
+            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin"
+        );
+        assert_eq!(cfg.whisper.model_sha256, "");
         assert_eq!(cfg.audio.device, "default");
         assert_eq!(cfg.audio.max_recording_seconds, 900);
         assert_eq!(cfg.audio.min_duration_seconds, 0.3);
@@ -245,6 +260,7 @@ beam_size = 5
 temperature = 0.2
 prompt_prefix = "Custom prefix."
 vocab = ["ydotool", "Ghostty", "kubectl"]
+model_sha256 = "abc123"
 
 [audio]
 device = "alsa_input.pci-0000_03_00"
@@ -281,6 +297,7 @@ retry_window_seconds = 1200
         assert_eq!(cfg.whisper.temperature, 0.2);
         assert_eq!(cfg.whisper.prompt_prefix, "Custom prefix.");
         assert_eq!(cfg.whisper.vocab, vec!["ydotool", "Ghostty", "kubectl"]);
+        assert_eq!(cfg.whisper.model_sha256, "abc123");
         assert_eq!(cfg.audio.device, "alsa_input.pci-0000_03_00");
         assert_eq!(cfg.audio.max_recording_seconds, 600);
         assert_eq!(cfg.audio.min_duration_seconds, 0.5);
