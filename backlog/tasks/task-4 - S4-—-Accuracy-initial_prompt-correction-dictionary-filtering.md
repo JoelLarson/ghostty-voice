@@ -1,9 +1,10 @@
 ---
 id: TASK-4
 title: 'S4 — Accuracy: initial_prompt, correction dictionary, filtering'
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-06-20 07:42'
+updated_date: '2026-06-20 10:05'
 labels:
   - needs-triage
 dependencies:
