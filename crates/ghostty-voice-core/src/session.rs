@@ -76,6 +76,21 @@ pub fn accumulate_clips(durations: &[Duration], min: Duration) -> Vec<Vec<usize>
     groups
 }
 
+/// How many of the `present` clip files are finalized (complete) and safe to
+/// transcribe, given whether `sox` is still recording. While sox runs, the
+/// newest clip is still being written, so only clip N is complete once clip N+1
+/// has opened — i.e. all but the last. Once sox has exited (session end or
+/// stop/cancel) it has flushed the final clip, so every present clip is
+/// finalized. The daemon polls the session dir and feeds this to its serial
+/// transcription queue.
+pub fn finalized_clip_count(present: usize, sox_running: bool) -> usize {
+    if sox_running {
+        present.saturating_sub(1)
+    } else {
+        present
+    }
+}
+
 /// An in-progress Continuous-mode session: the ordered clip transcripts as they
 /// finalize, assembled in record order and used to seed each next clip's
 /// `initial_prompt` (prompt chaining) from the running transcript tail.
@@ -183,6 +198,31 @@ mod tests {
     #[test]
     fn no_clips_accumulate_to_nothing() {
         assert_eq!(accumulate_clips(&[], MIN), Vec::<Vec<usize>>::new());
+    }
+
+    // ---- clip finalization (dir-watch) ---------------------------------
+
+    #[test]
+    fn while_recording_all_but_the_newest_clip_are_finalized() {
+        // sox is still writing the newest clip; clip N is only complete once
+        // clip N+1 has been opened. With 3 clips present and sox running, the
+        // first 2 are safe to transcribe; the 3rd is still being written.
+        assert_eq!(finalized_clip_count(3, true), 2);
+    }
+
+    #[test]
+    fn no_clip_is_finalized_until_a_second_one_opens() {
+        // A single clip present while sox runs is still in progress.
+        assert_eq!(finalized_clip_count(1, true), 0);
+        assert_eq!(finalized_clip_count(0, true), 0);
+    }
+
+    #[test]
+    fn when_sox_has_exited_every_clip_is_finalized() {
+        // Session end / stop: sox flushed the last clip, so all present clips
+        // are complete and ready to transcribe.
+        assert_eq!(finalized_clip_count(3, false), 3);
+        assert_eq!(finalized_clip_count(0, false), 0);
     }
 
     // ---- Session: ordered assembly + prompt chaining --------------------
