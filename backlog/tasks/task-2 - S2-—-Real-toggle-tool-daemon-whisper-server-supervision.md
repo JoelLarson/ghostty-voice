@@ -1,9 +1,10 @@
 ---
 id: TASK-2
 title: 'S2 — Real toggle tool: daemon + whisper-server supervision'
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-06-20 07:42'
+updated_date: '2026-06-20 08:29'
 labels:
   - needs-triage
 dependencies:
