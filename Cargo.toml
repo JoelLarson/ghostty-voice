@@ -5,6 +5,7 @@ members = [
     "crates/ghostty-voice-io",
     "crates/ghostty-voice",
     "crates/ghostty-voice-ctl",
+    "crates/ghostty-voiced",
 ]
 
 [workspace.package]
