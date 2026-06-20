@@ -1,0 +1,18 @@
+# ghostty-voice configuration (S1 subset).
+# Copy to ~/.config/ghostty-voice/config.toml and edit.
+
+[whisper]
+host          = "127.0.0.1"
+port          = 8910
+model_path    = "~/.local/share/ghostty-voice/models/ggml-large-v3.bin"
+# PCI address of the GPU to pin (ADR-0001). Find yours with `lspci`.
+# In S1 you launch whisper-server yourself; this is used from S2 on.
+vulkan_device = "0000:03:00.0"
+
+[audio]
+# PipeWire source name, or "default" for the default input.
+device = "default"
+
+[inject]
+# ydotool inter-key delay in ms — raise it if characters drop.
+key_delay_ms = 12
