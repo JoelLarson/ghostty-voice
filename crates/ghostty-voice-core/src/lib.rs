@@ -10,6 +10,7 @@ pub mod hotkeys;
 pub mod inject;
 pub mod machine;
 pub mod protocol;
+pub mod queue;
 pub mod supervisor;
 pub mod transcript;
 pub mod vulkan;
