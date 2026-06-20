@@ -1,10 +1,10 @@
 # ghostty-voice
 
 Voice dictation that types clean English prose into the focused **Ghostty** terminal on
-**GNOME/Wayland**, so you can speak instructions to a coding agent running over SSH. Whisper
-runs **locally** on the workstation GPU (whisper.cpp + Vulkan, `large-v3`); the transcript is
-injected as if typed from the keyboard. The text is **never auto-submitted** — you review
-before pressing Enter.
+**Wayland** (any compositor — desktop-environment-agnostic), so you can speak instructions to
+a coding agent running over SSH. Whisper runs **locally** on the workstation GPU (whisper.cpp +
+Vulkan, `large-v3`); the transcript is injected as if typed from the keyboard. The text is
+**never auto-submitted** — you review before pressing Enter.
 
 See `PLAN.md` for the full design, `CONTEXT.md` for the domain language, and `docs/adr/` for
 the load-bearing decisions.
@@ -17,7 +17,9 @@ Three processes; the daemon owns all state:
   supervised as a child of the daemon.
 - **`ghostty-voiced`** — the daemon (one systemd **user** service): supervises whisper-server,
   listens on a Unix socket, records, transcribes, injects, manages caches.
-- **`ghostty-voice-ctl`** — thin client spawned by each GNOME hotkey.
+- **`ghostty-voice-ctl`** — thin client for manual commands (`status`, `replay-last`), plus
+  the `bind` setup flow and `doctor`. (The everyday triggers are tactile — the daemon reads
+  them directly via evdev, no per-keypress process spawn.)
 
 ## Build
 
@@ -46,16 +48,21 @@ makepkg -si                    # builds the Rust workspace + a vendored whisper.
    `[whisper].model_sha256` (copy the hash from the HuggingFace LFS page); leave it empty to
    accept by presence. A failed/corrupt fetch is discarded and retried with backoff.
 3. **Config** — copy `config.toml.example` to `~/.config/ghostty-voice/config.toml` and edit.
-4. **Injection environment** — `ydotoold` must be running and you must have `/dev/uinput`
-   access. Diagnose with:
+4. **Environment** — `ydotoold` must be running, you must have `/dev/uinput` access, and the
+   trigger device must be readable (you're in the `input` group). Diagnose with:
    ```sh
    ghostty-voice-ctl doctor
    ```
-5. **Hotkeys** — install the GNOME custom keybindings (Super+D toggle, Super+Shift+D vad,
-   Super+Ctrl+D continuous, Super+Alt+D cancel):
+5. **Triggers** — bind the two tactile keys (read directly from `/dev/input` via evdev, so
+   they work on any compositor — no GNOME):
    ```sh
-   ghostty-voice-ctl install-hotkeys
+   ghostty-voice-ctl bind
    ```
+   It captures the Start and Stop keys, shows exactly what each emits, warns on conflicts, runs
+   a live "press once" test, and writes them to config. Defaults are **Shift+F10** (Start) and
+   **Shift+F9** (Stop). Re-run anytime to rebind; restart the daemon (or replug the device) to
+   apply. Because evdev does not grab the device, pick a **spare** key (an F-key works well) —
+   a normal typing key would both trigger and type.
 6. **Enable the daemon**:
    ```sh
    systemctl --user enable --now ghostty-voiced
@@ -81,23 +88,37 @@ hot-applies non-model fields (`ghostty-voice-ctl reload`). The slice each key be
   `vad_silence_seconds` / `vad_threshold_pct` (VAD, S5), `clip_cut_pause_seconds` /
   `session_end_silence_seconds` / `min_clip_seconds` (Continuous mode, S6).
 - `[inject]` — `key_delay_ms` (S2).
-- `[feedback]` — `sound_start` / `sound_stop` (cues, S7): a freedesktop theme event id (default,
-  played via `canberra-gtk-play`) or a sound-file path (played via `paplay`); empty disables.
+- `[input]` — tactile triggers (S8): `start_combo` / `stop_combo` (e.g. `Shift+F10`),
+  `hold_threshold_ms` (tap-vs-hold cutoff), and `device` (`auto`, a `/dev/input/...` path, or
+  `name:<substr>`). Set these with `ghostty-voice-ctl bind`.
+- `[feedback]` — `sound_start` / `sound_stop` (cues, S7): a freedesktop theme event id (default)
+  or a sound-file path — both played via `paplay`; empty disables.
 - `[cache]` — `wav_keep`, `transcript_keep`, `retry_window_seconds` (delivery + freshness, S3).
 - `[corrections]` — the jargon spell-fixer table (S4).
 
 ## Usage
 
-- **Toggle** (`Super+D`): press to start recording, press again to stop → transcribe → type.
-- **VAD** (`Super+Shift+D`): press to start; `sox` auto-stops on the first trailing silence,
-  then transcribes → types. Hands-free, single utterance.
-- **Continuous** (`Super+Ctrl+D`): the north-star, hands-free long-form mode. Talk naturally
-  with pauses; short pauses cut the audio into **clips** that batch-transcribe in the
-  background (context-chained), and a long silence (~10 s) ends the **session** — the
-  assembled transcript is then typed once. `cancel` aborts the whole session. Tune the
-  segmentation with `clip_cut_pause_seconds` / `session_end_silence_seconds` /
-  `min_clip_seconds` in `[audio]`.
-- **Cancel** (`Super+Alt+D`): abort the current recording (or the whole continuous session).
+Two tactile keys drive everything (defaults **Shift+F10** = Start, **Shift+F9** = Stop), with
+tap-vs-hold semantics. Recording begins the instant Start goes down (record-on-press), so
+push-to-talk never clips the first word.
+
+- **Start tap** (quick press/release): **latch** recording on — talk freely, stop deliberately.
+- **Start hold** (press and hold): **push-to-talk** — records only while held, stops and
+  transcribes on release.
+- **Stop tap**: **stop** the latched recording → transcribe → type.
+- **Stop hold**: start a **hands-free VAD** recording — `sox` auto-stops on the first trailing
+  silence, then transcribes → types.
+
+The tap-vs-hold cutoff is `[input].hold_threshold_ms` (~250 ms). Rebind the keys with
+`ghostty-voice-ctl bind`.
+
+- **Continuous mode** (the north-star long-form mode) and `cancel` remain available as
+  `ghostty-voice-ctl continuous` / `ghostty-voice-ctl cancel` (no tactile gesture this round).
+  In Continuous mode, short pauses cut the audio into **clips** that batch-transcribe in the
+  background (context-chained), and a long silence (~10 s) ends the **session** — the assembled
+  transcript is typed once. Tune the segmentation with `clip_cut_pause_seconds` /
+  `session_end_silence_seconds` / `min_clip_seconds` in `[audio]`.
+- **Replay**: `ghostty-voice-ctl replay-last` re-injects the most-recent cached transcript.
 - **Disable / free the 16 GB VRAM**: `systemctl --user stop ghostty-voiced` (cascades to
   whisper-server).
 

@@ -1,4 +1,13 @@
-# ghostty-voice — Voice Dictation for Ghostty on GNOME Wayland
+# ghostty-voice — Voice Dictation for Ghostty on Wayland
+
+> **S8 update (tactile triggers):** the GNOME hotkey path described in much of this plan has
+> been **superseded**. Triggers are now read directly from `/dev/input` via **evdev**, so the
+> tool is **desktop-environment-agnostic** (any Wayland compositor, or X). Two configurable
+> keys drive everything with tap-vs-hold semantics — **Start** (default `Shift+F10`): tap =
+> latch, hold = push-to-talk; **Stop** (default `Shift+F9`): tap = stop, hold = hands-free VAD.
+> `gsettings`/`install-hotkeys` and `libcanberra` are removed; cues play via `paplay`. Where
+> this plan still says "GNOME hotkey" / "Super+D", read it as the historical S2–S7 design; the
+> current trigger model is the `[input]` section + `ghostty-voice-ctl bind`. See **S8** below.
 
 ## Purpose
 
@@ -378,6 +387,7 @@ the destination. Earlier slices must keep the continuous-capture-with-segmentati
 | **S5 — VAD** | Single silence auto-stop via `sox` (currently a missing dependency), threshold config. | Hands-free single utterance. |
 | **S6 — Continuous mode** ⭐ | Talk → short pauses cut **Clips** → pipelined batch transcribe (context-chained via prev-clip tail) → assemble **Session** transcript → deliver; long silence (~10 s) ends it. | **The north-star.** (ADR-0002) |
 | **S7 — Packaging** | PKGBUILD (vendored whisper.cpp Vulkan build), systemd user unit, first-run model download, `install-hotkeys`, a `doctor` command (ydotoold/udev/`YDOTOOL_SOCKET`), README. | Distributable. |
+| **S8 — evdev tactile input** | Triggers read directly via **evdev** (`/dev/input`), beneath the compositor → DE-agnostic. Two configurable keys with **tap-vs-hold**: Start tap=latch / hold=push-to-talk (record-on-press); Stop tap=stop / hold=VAD. Pure key-tracker + key-combo + `[input]` config + bind-conflict evaluator (all unit-tested); `ghostty-voice-ctl bind` (capture → warn → live test → write). **Removes** GNOME: `core::hotkeys`, `install-hotkeys`, all `gsettings`; cues `canberra`→`paplay`; drops `libcanberra`. | Tactile, DE-agnostic. Requirements become **Wayland + PipeWire**. |
 
 Each slice = one PRD = one tracer bullet, TDD'd **inside-out**: pure `core` logic first (real
 objects, no mocks), then boundary adapters with real-subprocess integration tests.

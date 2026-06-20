@@ -32,11 +32,11 @@ device = "default"
 max_recording_seconds = 900
 # Recordings shorter than this are discarded (accidental blips type nothing).
 min_duration_seconds = 0.3
-# VAD mode (Super+Shift+D): sox auto-stops after this many seconds of trailing
+# VAD mode (Stop key held): sox auto-stops after this many seconds of trailing
 # silence below vad_threshold_pct (% of full scale). Tune to your mic and room.
 vad_silence_seconds = 2.0
 vad_threshold_pct = 3
-# Continuous mode (Super+Ctrl+D): talk continuously and clips are cut at short
+# Continuous mode: talk continuously and clips are cut at short
 # pauses, transcribed in the background, then assembled and delivered when you
 # stop for a while. Tune these to your speech rhythm:
 #   clip_cut_pause_seconds      - a pause this long cuts the current clip (~0.8-1.5 s)
@@ -51,12 +51,31 @@ min_clip_seconds = 2.0
 # ydotool inter-key delay in ms — raise it if characters drop.
 key_delay_ms = 12
 
+[input]
+# Tactile triggers, read directly from /dev/input via evdev (no GNOME). Set
+# these with `ghostty-voice-ctl bind`, which captures the keys, warns on
+# conflicts, runs a live test, and writes them here.
+#   start_combo  - Start key: a quick TAP latches recording; HOLD = push-to-talk
+#                  (records while held, stops on release; record-on-press so the
+#                  first word is never clipped).
+#   stop_combo   - Stop key: a quick TAP stops a latched recording; HOLD starts a
+#                  hands-free VAD recording (auto-stops on silence).
+#   hold_threshold_ms - tap-vs-hold cutoff; a release at/after this is a hold.
+#   device       - which ONE input device to read: "auto" (first keyboard), a
+#                  "/dev/input/..." path, or "name:<substring>" of the device
+#                  name. Only this device is read.
+start_combo = "Shift+F10"
+stop_combo = "Shift+F9"
+hold_threshold_ms = 250
+device = "auto"
+
 [feedback]
-# Hot-path audio cues. Two sources, no assets to ship:
-#   - a freedesktop THEME EVENT (default): a bare id or a "theme:" prefix, played
-#     via `canberra-gtk-play -i <id>` (e.g. "message-new-instant", "dialog-information",
-#     "bell"). Browse /usr/share/sounds/freedesktop/stereo for ids.
-#   - a FILE path (contains a "/" or starts with "~"): played via `paplay <path>`.
+# Hot-path audio cues, all played via `paplay` (PipeWire — no libcanberra). Two
+# sources, no assets to ship:
+#   - a freedesktop THEME EVENT (default): a bare id or a "theme:" prefix, e.g.
+#     "message-new-instant", "complete", "bell" — mapped to its .oga under
+#     /usr/share/sounds/freedesktop/stereo (from sound-theme-freedesktop).
+#   - a FILE path (contains a "/" or starts with "~"): played as that file.
 #   - empty: disables that cue.
 # sound_start fires when recording begins ("now listening"); sound_stop fires
 # when recording ends and on empty/silence ("working / done").
