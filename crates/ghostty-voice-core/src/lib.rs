@@ -4,4 +4,5 @@
 //! mocks); the daemon and CLI binaries are thin IO shells over this crate.
 
 pub mod config;
+pub mod inject;
 pub mod vulkan;
