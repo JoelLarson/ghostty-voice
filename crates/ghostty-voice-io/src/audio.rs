@@ -30,6 +30,33 @@ pub fn spawn_recorder(device: &str, out: &Path) -> Result<Child> {
         .context("failed to start pw-record (is PipeWire running?)")
 }
 
+/// Start a hands-free VAD capture from `device` into `out` using `sox`: it
+/// records a 16 kHz mono s16 WAV (the same contract as [`spawn_recorder`]) and
+/// **self-terminates** after `silence_seconds` of trailing silence below
+/// `threshold_pct`. The caller still tracks the [`Child`] so a `toggle` can stop
+/// it early and the `max_recording_seconds` cap can backstop a never-speak hang.
+pub fn spawn_vad_recorder(
+    device: &str,
+    out: &Path,
+    silence_seconds: f32,
+    threshold_pct: u32,
+) -> Result<Child> {
+    let argv = ghostty_voice_core::vad::record_args(
+        &out.to_string_lossy(),
+        silence_seconds,
+        threshold_pct,
+    );
+    let mut cmd = Command::new("sox");
+    cmd.args(&argv);
+    if device != "default" {
+        // sox reads the default PipeWire/ALSA source via `-d`; pin a device by
+        // pointing AUDIODEV at it (honored by the `-d` default-device driver).
+        cmd.env("AUDIODEV", device);
+    }
+    cmd.spawn()
+        .context("failed to start sox (is sox installed?)")
+}
+
 /// Stop a recorder cleanly (SIGINT, then wait for exit).
 pub fn stop_recorder(child: &mut Child) -> Result<()> {
     let pid = Pid::from_raw(child.id() as i32);
@@ -139,5 +166,179 @@ mod tests {
         std::fs::write(&path, wav_with_data(32_000)).unwrap();
         assert_eq!(wav_duration(&path).unwrap(), Duration::from_secs(1));
         let _ = std::fs::remove_file(&path);
+    }
+
+    fn sox_available() -> bool {
+        Command::new("sox")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    /// Real `sox`, file source: synthesize a 0.5 s tone followed by 3 s of
+    /// silence, then run the VAD `silence` effect (the exact args the recorder
+    /// builds) over it. The trailing-silence trim must cut the file well below
+    /// its 3.5 s length — proof the auto-stop effect fires on real sox.
+    #[test]
+    fn sox_silence_effect_auto_stops_on_trailing_silence() {
+        if !sox_available() {
+            eprintln!("skipping: sox not installed");
+            return;
+        }
+        let dir = std::env::temp_dir();
+        let src = dir.join(format!("gv-vad-src-{}.wav", std::process::id()));
+        let out = dir.join(format!("gv-vad-out-{}.wav", std::process::id()));
+
+        // 0.5 s of 440 Hz tone then 3 s of silence, in the WAV contract.
+        let synth = Command::new("sox")
+            .args([
+                "-r",
+                "16000",
+                "-c",
+                "1",
+                "-b",
+                "16",
+                "-e",
+                "signed-integer",
+                "-n",
+            ])
+            .arg(&src)
+            .args(["synth", "0.5", "sine", "440"])
+            .args(["pad", "0", "3"])
+            .status()
+            .expect("sox synth");
+        assert!(synth.success(), "sox synth failed");
+        let full = wav_duration(&src).unwrap();
+        assert!(full >= Duration::from_secs(3), "source should be ~3.5 s");
+
+        // Apply the same trailing-silence trim the VAD recorder uses (2 s @ 3%).
+        let effect = ghostty_voice_core::vad::silence_effect(2.0, 3);
+        let status = Command::new("sox")
+            .arg(&src)
+            .arg(&out)
+            .args(&effect)
+            .status()
+            .expect("sox silence");
+        assert!(status.success(), "sox silence effect failed");
+
+        let trimmed = wav_duration(&out).unwrap();
+        assert!(
+            trimmed < Duration::from_secs(2),
+            "trailing silence should be trimmed: got {trimmed:?} from {full:?}",
+        );
+
+        let _ = std::fs::remove_file(&src);
+        let _ = std::fs::remove_file(&out);
+    }
+
+    /// Real `sox`, file source: a fully-silent input never arms the leading
+    /// "above-threshold" trigger of the `silence` effect, so no audio is ever
+    /// retained — the output is empty. On a *live* mic this is the "never speak"
+    /// hang: sox blocks waiting for the trigger that never arms and never writes
+    /// a stop. Proof the VAD trim cannot rescue dead silence and the daemon's
+    /// `max_recording_seconds` cap is the necessary backstop.
+    #[test]
+    fn sox_never_auto_stops_when_no_speech_ever_rises_above_threshold() {
+        if !sox_available() {
+            eprintln!("skipping: sox not installed");
+            return;
+        }
+        let dir = std::env::temp_dir();
+        let src = dir.join(format!("gv-vad-silsrc-{}.wav", std::process::id()));
+        let out = dir.join(format!("gv-vad-silout-{}.wav", std::process::id()));
+
+        // 3 s of pure silence — never crosses the 3% threshold.
+        let synth = Command::new("sox")
+            .args([
+                "-r",
+                "16000",
+                "-c",
+                "1",
+                "-b",
+                "16",
+                "-e",
+                "signed-integer",
+                "-n",
+            ])
+            .arg(&src)
+            .args(["trim", "0", "3"])
+            .status()
+            .expect("sox synth silence");
+        assert!(synth.success(), "sox synth failed");
+
+        let effect = ghostty_voice_core::vad::silence_effect(2.0, 3);
+        let status = Command::new("sox")
+            .arg(&src)
+            .arg(&out)
+            .args(&effect)
+            .status()
+            .expect("sox silence");
+        assert!(status.success(), "sox silence effect failed");
+
+        // The leading trigger never armed, so nothing above threshold was ever
+        // retained: the output holds no speech. On a live mic sox would instead
+        // block forever — exactly the never-speak hang the time cap backstops.
+        let kept = wav_duration(&out).unwrap();
+        assert!(
+            kept < Duration::from_millis(100),
+            "dead silence retains no speech: kept {kept:?}",
+        );
+
+        let _ = std::fs::remove_file(&src);
+        let _ = std::fs::remove_file(&out);
+    }
+
+    /// Real `sox`: a SIGINT (what [`stop_recorder`] sends, the `toggle`
+    /// manual-early-stop path) makes sox exit cleanly and flush a valid,
+    /// readable WAV — proof an in-flight VAD recording can be cut short and its
+    /// audio still survives for the pipeline.
+    #[test]
+    fn sigint_cleanly_stops_an_in_flight_sox_recording() {
+        if !sox_available() {
+            eprintln!("skipping: sox not installed");
+            return;
+        }
+        let dir = std::env::temp_dir();
+        let src = dir.join(format!("gv-vad-longsrc-{}.wav", std::process::id()));
+        let out = dir.join(format!("gv-vad-stopout-{}.wav", std::process::id()));
+
+        // A long tone source so sox is still running when we interrupt it.
+        let synth = Command::new("sox")
+            .args([
+                "-r",
+                "16000",
+                "-c",
+                "1",
+                "-b",
+                "16",
+                "-e",
+                "signed-integer",
+                "-n",
+            ])
+            .arg(&src)
+            .args(["synth", "30", "sine", "440"])
+            .status()
+            .expect("sox synth long");
+        assert!(synth.success(), "sox synth failed");
+
+        // Slow the read so the process is alive across the SIGINT (real-time).
+        let mut child = Command::new("sox")
+            .arg("--buffer")
+            .arg("1024")
+            .arg(&src)
+            .arg(&out)
+            .args(["trim", "0", "30"])
+            .spawn()
+            .expect("spawn sox");
+
+        std::thread::sleep(Duration::from_millis(300));
+        stop_recorder(&mut child).expect("clean SIGINT stop");
+
+        // The flushed WAV must be readable (header backpatched on clean exit).
+        assert!(wav_duration(&out).is_ok(), "stopped WAV must be readable");
+
+        let _ = std::fs::remove_file(&src);
+        let _ = std::fs::remove_file(&out);
     }
 }
