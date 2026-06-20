@@ -5,4 +5,5 @@
 
 pub mod config;
 pub mod inject;
+pub mod transcript;
 pub mod vulkan;
