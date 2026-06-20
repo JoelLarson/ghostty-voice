@@ -31,6 +31,8 @@ enum Cmd {
     Status,
     /// Re-read non-model config.
     Reload,
+    /// Re-inject the most-recent cached transcript (refocus Ghostty first).
+    ReplayLast,
     /// Install GNOME custom keybindings (Super+D toggle, Super+Alt+D cancel).
     InstallHotkeys,
     /// Diagnose the injection environment (ydotoold, input group, uinput).
@@ -45,6 +47,7 @@ impl Cmd {
             Cmd::Cancel => "cancel",
             Cmd::Status => "status",
             Cmd::Reload => "reload",
+            Cmd::ReplayLast => "replay-last",
             Cmd::InstallHotkeys | Cmd::Doctor => return None,
         })
     }
