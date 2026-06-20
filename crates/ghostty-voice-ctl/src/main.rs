@@ -33,6 +33,8 @@ enum Cmd {
     Reload,
     /// Install GNOME custom keybindings (Super+D toggle, Super+Alt+D cancel).
     InstallHotkeys,
+    /// Diagnose the injection environment (ydotoold, input group, uinput).
+    Doctor,
 }
 
 impl Cmd {
@@ -43,7 +45,7 @@ impl Cmd {
             Cmd::Cancel => "cancel",
             Cmd::Status => "status",
             Cmd::Reload => "reload",
-            Cmd::InstallHotkeys => return None,
+            Cmd::InstallHotkeys | Cmd::Doctor => return None,
         })
     }
 }
@@ -70,13 +72,62 @@ fn send_to(path: &Path, word: &str) -> Result<String> {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    match cli.command.word() {
-        Some(word) => {
+    match cli.command {
+        Cmd::InstallHotkeys => install_hotkeys(),
+        Cmd::Doctor => doctor(),
+        ref other => {
+            let word = other.word().expect("a socket command");
             println!("{}", send_to(&socket_path()?, word)?);
             Ok(())
         }
-        None => install_hotkeys(),
     }
+}
+
+/// Probe the injection environment and print the diagnostic checks.
+fn doctor() -> Result<()> {
+    use ghostty_voice_core::doctor::{CheckStatus, evaluate};
+
+    let ydotool_socket = std::env::var("YDOTOOL_SOCKET").unwrap_or_else(|_| {
+        std::env::var("XDG_RUNTIME_DIR")
+            .map(|d| format!("{d}/.ydotool_socket"))
+            .unwrap_or_else(|_| "/tmp/.ydotool_socket".to_owned())
+    });
+
+    let probes = ghostty_voice_core::doctor::Probes {
+        ydotool_socket_exists: Path::new(&ydotool_socket).exists(),
+        in_input_group: in_group("input"),
+        uinput_present: Path::new("/dev/uinput").exists(),
+    };
+
+    let mut all_ok = true;
+    for check in evaluate(&probes) {
+        match check.status {
+            CheckStatus::Ok => println!("  ok   {}", check.name),
+            CheckStatus::Problem(msg) => {
+                all_ok = false;
+                println!("  FAIL {} — {msg}", check.name);
+            }
+        }
+    }
+    if !all_ok {
+        anyhow::bail!("environment has problems (see above)");
+    }
+    println!("environment looks good.");
+    Ok(())
+}
+
+/// Is the current user a member of `group` (via `id -Gn`)?
+fn in_group(group: &str) -> bool {
+    std::process::Command::new("id")
+        .arg("-Gn")
+        .output()
+        .ok()
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .split_whitespace()
+                .any(|g| g == group)
+        })
+        .unwrap_or(false)
 }
 
 /// Install the GNOME custom keybindings via `gsettings`, merging with any
