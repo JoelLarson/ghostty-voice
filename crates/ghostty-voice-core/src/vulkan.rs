@@ -48,6 +48,41 @@ impl PciAddress {
     }
 }
 
+/// One Vulkan device as enumerated by the driver. `index` is the value
+/// `GGML_VK_VISIBLE_DEVICES` uses to select it; `pci_address` is obtained at
+/// the enumeration boundary (e.g. via `VK_EXT_pci_bus_info`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VulkanDevice {
+    pub index: u32,
+    pub name: String,
+    pub pci_address: PciAddress,
+}
+
+/// Why a configured PCI address could not be resolved to a device.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResolveError {
+    /// No enumerated device sits at the target PCI address.
+    DeviceNotFound { target: PciAddress },
+    /// More than one device claims the target address (should not happen).
+    AmbiguousMatch { target: PciAddress, count: usize },
+}
+
+/// Resolve a configured PCI address to the Vulkan enumeration index to pin.
+pub fn resolve_device_index(
+    devices: &[VulkanDevice],
+    target: PciAddress,
+) -> Result<u32, ResolveError> {
+    let matches: Vec<&VulkanDevice> = devices.iter().filter(|d| d.pci_address == target).collect();
+    match matches.as_slice() {
+        [] => Err(ResolveError::DeviceNotFound { target }),
+        [only] => Ok(only.index),
+        many => Err(ResolveError::AmbiguousMatch {
+            target,
+            count: many.len(),
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -76,5 +111,46 @@ mod tests {
     #[test]
     fn rejects_garbage() {
         assert!(PciAddress::parse("not-a-pci-address").is_err());
+    }
+
+    fn pci(s: &str) -> PciAddress {
+        PciAddress::parse(s).expect("test fixture address should parse")
+    }
+
+    /// The real two-RADV-device layout on the dev workstation (ADR-0001).
+    fn sample_devices() -> Vec<VulkanDevice> {
+        vec![
+            VulkanDevice {
+                index: 0,
+                name: "AMD Radeon RX 6900 XT (RADV NAVI21)".to_owned(),
+                pci_address: pci("0000:03:00.0"),
+            },
+            VulkanDevice {
+                index: 1,
+                name: "AMD Ryzen 9 7950X 16-Core Processor (RADV RAPHAEL_MENDOCINO)".to_owned(),
+                pci_address: pci("0000:1a:00.0"),
+            },
+        ]
+    }
+
+    #[test]
+    fn resolves_discrete_gpu_to_its_index() {
+        let idx = resolve_device_index(&sample_devices(), pci("0000:03:00.0")).unwrap();
+        assert_eq!(idx, 0);
+    }
+
+    #[test]
+    fn resolves_igpu_to_its_index() {
+        let idx = resolve_device_index(&sample_devices(), pci("0000:1a:00.0")).unwrap();
+        assert_eq!(idx, 1);
+    }
+
+    #[test]
+    fn missing_address_is_device_not_found() {
+        let target = pci("0000:0a:00.0");
+        assert_eq!(
+            resolve_device_index(&sample_devices(), target),
+            Err(ResolveError::DeviceNotFound { target }),
+        );
     }
 }
