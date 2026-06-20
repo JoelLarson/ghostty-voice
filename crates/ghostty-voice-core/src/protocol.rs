@@ -10,6 +10,10 @@ pub enum Command {
     Toggle,
     /// Start a hands-free VAD recording (sox auto-stops on first silence, S5).
     Vad,
+    /// Start a hands-free Continuous-mode session (S6): short pauses cut clips
+    /// that batch-transcribe in the background; a long silence ends the session
+    /// and delivers the assembled transcript. `cancel` aborts the whole session.
+    Continuous,
     Cancel,
     Status,
     Reload,
@@ -48,6 +52,7 @@ impl Command {
         match word.to_ascii_lowercase().as_str() {
             "toggle" => Ok(Command::Toggle),
             "vad" => Ok(Command::Vad),
+            "continuous" => Ok(Command::Continuous),
             "cancel" => Ok(Command::Cancel),
             "status" => Ok(Command::Status),
             "reload" => Ok(Command::Reload),
@@ -87,6 +92,7 @@ mod tests {
     fn parses_each_command() {
         assert_eq!(Command::parse("toggle").unwrap(), Command::Toggle);
         assert_eq!(Command::parse("vad").unwrap(), Command::Vad);
+        assert_eq!(Command::parse("continuous").unwrap(), Command::Continuous);
         assert_eq!(Command::parse("cancel").unwrap(), Command::Cancel);
         assert_eq!(Command::parse("status").unwrap(), Command::Status);
         assert_eq!(Command::parse("reload").unwrap(), Command::Reload);

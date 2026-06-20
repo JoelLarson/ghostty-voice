@@ -19,6 +19,11 @@ pub enum Action {
     /// Start a hands-free VAD recording: `sox` records and self-terminates on
     /// the first trailing silence, then enqueues like any other utterance (S5).
     StartVadRecording,
+    /// Start a hands-free Continuous-mode session (S6): `sox` splits the capture
+    /// into silence-bounded clips that batch-transcribe in the background; a long
+    /// silence ends the session and delivers the assembled transcript. `cancel`
+    /// (DiscardRecording) aborts the whole session.
+    StartContinuous,
     /// Stop the recorder, enqueue the utterance, and kick off background
     /// transcription — the recorder is freed (Idle) so the next recording can
     /// start while this one drains through the delivery queue.
@@ -70,6 +75,13 @@ pub fn apply(state: State, command: Command) -> Transition {
         (State::Idle, Command::Vad) => go(State::Recording, Action::StartVadRecording),
         (State::Recording, Command::Vad) => go(State::Recording, Action::None),
         (State::Transcribing, Command::Vad) => go(State::Recording, Action::StartVadRecording),
+
+        // Continuous mode opens a hands-free session; like VAD, a second press
+        // while the recorder is busy is ignored. `cancel` (DiscardRecording)
+        // aborts the whole session.
+        (State::Idle, Command::Continuous) => go(State::Recording, Action::StartContinuous),
+        (State::Recording, Command::Continuous) => go(State::Recording, Action::None),
+        (State::Transcribing, Command::Continuous) => go(State::Recording, Action::StartContinuous),
         // The recorder is freed on stop, so it is never in Transcribing when a
         // toggle arrives; treat any stray case as starting a fresh recording.
         (State::Transcribing, Command::Toggle) => go(State::Recording, Action::StartRecording),
@@ -150,6 +162,45 @@ mod tests {
             apply(State::Loading, Command::Vad).response,
             Response::Err(_)
         ));
+    }
+
+    #[test]
+    fn continuous_starts_a_session_from_idle() {
+        // Continuous mode (S6) opens a hands-free session: sox splits the
+        // capture into clips that transcribe in the background. The recorder
+        // goes to Recording, exactly like the other start paths.
+        let t = apply(State::Idle, Command::Continuous);
+        assert_eq!(t.next, State::Recording);
+        assert_eq!(t.action, Action::StartContinuous);
+        assert_eq!(t.response, Response::Ok(State::Recording));
+    }
+
+    #[test]
+    fn continuous_while_already_recording_is_ignored() {
+        // The recorder is busy; a second continuous press must not start a new
+        // session over the running one.
+        let t = apply(State::Recording, Command::Continuous);
+        assert_eq!(t.next, State::Recording);
+        assert_eq!(t.action, Action::None);
+    }
+
+    #[test]
+    fn continuous_is_rejected_while_loading() {
+        assert!(matches!(
+            apply(State::Loading, Command::Continuous).response,
+            Response::Err(_)
+        ));
+    }
+
+    #[test]
+    fn cancel_during_a_continuous_session_aborts_the_recording() {
+        // cancel aborts the whole session: it discards the recorder just like a
+        // normal recording. The daemon tears the session pipeline down on the
+        // same DiscardRecording action.
+        let started = apply(State::Idle, Command::Continuous);
+        let cancelled = apply(started.next, Command::Cancel);
+        assert_eq!(cancelled.next, State::Idle);
+        assert_eq!(cancelled.action, Action::DiscardRecording);
     }
 
     #[test]
