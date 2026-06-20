@@ -265,6 +265,18 @@ retry_window_seconds = 1200
     }
 
     #[test]
+    fn shipped_example_config_parses() {
+        // The shipped config.toml.example must stay valid under deny_unknown_fields
+        // so a fresh install's copy-and-edit never starts from a broken file.
+        let example = include_str!("../../../config.toml.example");
+        let cfg = Config::from_toml_str(example).expect("config.toml.example must parse");
+        assert_eq!(cfg.whisper.beam_size, 8);
+        assert_eq!(cfg.audio.min_duration_seconds, 0.3);
+        assert_eq!(cfg.corrections.get("why do tool").unwrap(), "ydotool");
+        assert!(cfg.whisper.vocab.contains(&"ydotool".to_owned()));
+    }
+
+    #[test]
     fn rejects_malformed_toml() {
         assert!(Config::from_toml_str("this is = = not toml").is_err());
     }

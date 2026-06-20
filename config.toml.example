@@ -10,6 +10,19 @@ model_path    = "~/.local/share/ghostty-voice/models/ggml-large-v3.bin"
 # PCI address of the GPU to pin (ADR-0001). Find yours with `lspci`.
 # In S1 you launch whisper-server yourself; this is used from S2 on.
 vulkan_device = "0000:03:00.0"
+# Accuracy stack (S4). beam_size 8 buys accuracy on ambiguous audio; temperature
+# 0.0 keeps decoding deterministic.
+beam_size   = 8
+temperature = 0.0
+# initial_prompt biasing: the prefix sentence plus the vocab terms (appended
+# after " Vocabulary:") seed the decoder toward your jargon's correct spelling.
+# Grow `vocab` as you notice misses — it's bounded to Whisper's ~224-token cap,
+# and the daemon warns (rather than silently dropping terms) if you overflow it.
+prompt_prefix = "Transcript of technical instructions."
+vocab = [
+  "ydotool", "Ghostty", "whisper.cpp", "faster-whisper", "kubectl", "ripgrep",
+  "useEffect", "rebase", "git stash", "Wayland", "systemd", "Vulkan", "Claude Code",
+]
 
 [audio]
 # PipeWire source name, or "default" for the default input.
@@ -17,6 +30,8 @@ device = "default"
 # Runaway-recording safety cap (~900 s): on expiry the recorder stops and the
 # utterance is enqueued so speech isn't lost.
 max_recording_seconds = 900
+# Recordings shorter than this are discarded (accidental blips type nothing).
+min_duration_seconds = 0.3
 
 [inject]
 # ydotool inter-key delay in ms — raise it if characters drop.
@@ -38,3 +53,13 @@ transcript_keep = 5
 # recording ends is auto-typed; slower than this it's held for `replay-last`.
 # Generous backstop (~15 min), not a routine gate — hands-free is the priority.
 retry_window_seconds = 900
+
+# Deterministic jargon spell-fixer (S4): case-insensitive, whole-word
+# find/replace applied after transcription, before typing. For terms Whisper
+# reliably mishears the same way. A jargon fixer — NOT a code-symbol munger.
+# Longer (phrase) keys are applied first so they win over their substrings.
+# `reload` re-reads this table live (no model reload).
+[corrections]
+"why do tool" = "ydotool"
+"ghosty"      = "Ghostty"
+"cube cuttle" = "kubectl"
