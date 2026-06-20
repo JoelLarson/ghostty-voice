@@ -416,6 +416,7 @@ fn start_continuous(d: &mut Daemon, daemon: &Arc<Mutex<Daemon>>) -> Result<()> {
 async fn drive_continuous(daemon: Arc<Mutex<Daemon>>, generation: u64) {
     let mut session = ghostty_voice_core::session::Session::new(CLIP_CHAIN_WORDS);
     let mut transcribed = 0usize;
+    let mut last_present = 0usize;
 
     loop {
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -444,9 +445,14 @@ async fn drive_continuous(daemon: Arc<Mutex<Daemon>>, generation: u64) {
         let present = present_clip_count(&dir);
         let finalized = ghostty_voice_core::session::finalized_clip_count(present, sox_running);
 
+        // A new clip opening means the user spoke recently — reset the
+        // session-end countdown even before that clip is transcribed, so slow
+        // transcription can't make an active session look silent.
+        let mut made_progress = present > last_present;
+        last_present = present;
+
         // Transcribe any newly-finalized clips, in strict order, chaining the
         // running transcript tail into each one's initial_prompt.
-        let mut made_progress = false;
         while transcribed < finalized {
             let clip = clip_path(&dir, transcribed + 1);
             let prompt_tail = session.prompt_for_next();
