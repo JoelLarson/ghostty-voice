@@ -1,10 +1,10 @@
 ---
 id: TASK-2
 title: 'S2 — Real toggle tool: daemon + whisper-server supervision'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-06-20 07:42'
-updated_date: '2026-06-20 08:29'
+updated_date: '2026-06-20 08:47'
 labels:
   - needs-triage
 dependencies:
@@ -84,3 +84,9 @@ Cache-before-type, Recorder + ordered delivery queue, `replay-last`, freshness w
 <!-- SECTION:PLAN:BEGIN -->
 Split into ghostty-voiced + ghostty-voice-ctl atop core. Core-first TDD: supervisor state machine + backoff, wire-protocol parse/format, command->state transitions. Then boundary adapters: process spawn/kill+signals, Unix socket, ydotoold health-check. Integration via a stub whisper-server. Single-utterance (queue is S3).
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Code-complete: core modules protocol/machine/supervisor/hotkeys (all unit-tested), ghostty-voiced daemon (supervision, TCP readiness, backoff restart, VRAM teardown, socket server, state machine wiring, GPU pin via vulkaninfo parser+resolver), ghostty-voice-ctl client (tested against fake socket) + install-hotkeys, systemd user unit, config.toml.example. IO adapters extracted to ghostty-voice-io. All green, clippy+fmt clean. PENDING ON-HARDWARE: real whisper-server spawn/readiness, GPU pin name-assertion against whisper stderr, gsettings install (needs GNOME session), end-to-end toggle->type.
+<!-- SECTION:NOTES:END -->
