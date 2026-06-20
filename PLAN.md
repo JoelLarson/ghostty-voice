@@ -357,26 +357,30 @@ These were given sensible defaults but never explicitly decided; revisit when co
    this, or whether it's README-only.
 7. **VAD threshold defaults** (`vad_silence_seconds`, `vad_threshold_pct`) need real-mic tuning.
 
-## Suggested milestone breakdown (for issue-splitting tomorrow)
+## Milestone breakdown — vertical slices
 
-Ordered so each slice is independently demoable and de-risks the next.
+Sliced **vertically**: each slice is independently usable end-to-end and strictly better
+than the last. (Supersedes the earlier horizontal M1–M7 cut, which had non-working layers
+like "supervision with no output." Decisions refined during the plan-grilling session live
+in `CONTEXT.md` and `docs/adr/`.)
 
-1. **M1 — whisper-server supervision + transcription round-trip.** Vendor the Vulkan build;
-   daemon spawns `whisper-server`, polls readiness, restarts on death, tears down on stop.
-   Prove it with a manual `curl` of a sample WAV → text. *De-risks the GPU/Vulkan unknown
-   before any UI exists.* (Open items 4, 5.)
-2. **M2 — recording + socket control core.** Unix socket + wire protocol, `ghostty-voice-ctl`,
-   the Idle/Recording/Transcribing state machine, `toggle` via `pw-record`, POST to
-   whisper-server, return text to stdout (no injection yet). `cancel`, `status`, `reload`.
-3. **M3 — injection + feedback.** `ydotool type` with `key-delay`, audio cues, the
-   focus-discipline pre-type cue, the clipboard-less `replay-last` recovery. (Open items 1, 2.)
-4. **M4 — accuracy stack.** `initial_prompt` wiring, correction dictionary, `beam-size`,
-   empty/hallucination/sub-min-duration filtering.
-5. **M5 — VAD mode.** `sox` silence auto-stop, threshold config. (Open item 7.)
-6. **M6 — caches + failure recovery.** WAV/transcript caches with count caps, the 30 s retry
-   window, server-down queueing, ydotool-fail recovery.
-7. **M7 — packaging.** PKGBUILD (vendored whisper.cpp Vulkan build), systemd user unit,
-   first-run model download, `install-hotkeys`, README. (Open items 3, 6.)
+The **north-star is Continuous mode (S6)** — hands-free, conversational long-form dictation.
+Build order is forced by dependencies (it sits atop recording + supervision + injection +
+accuracy), so batch Toggle/VAD are the foundation built and validated on the way there, not
+the destination. Earlier slices must keep the continuous-capture-with-segmentation seam open.
+
+| Slice | Delivers (working) | Notes |
+|---|---|---|
+| **S1 — Walking skeleton** | Speak → text typed into Ghostty, end-to-end. `whisper-server` started manually (warm), pinned to the 6900 XT by PCI address; minimal record → POST → `ydotool type`. Trigger = simple CLI, Enter-to-stop. | Proves Vulkan `large-v3` on this GPU **and** ydotool injection together. Captures a warm-latency number. Published as **TASK-1**. (ADR-0001) |
+| **S2 — Real toggle tool** | `systemctl --user` daemon + Super+D toggle. Daemon **supervises** whisper-server (eager start, readiness via load-name assertion, restart/backoff, VRAM teardown on stop); Unix socket + `ghostty-voice-ctl` + state machine + `cancel`/`status`/`reload`; `install-hotkeys`. | Automates the warm-model lifecycle behind S1's thread. |
+| **S3 — Trustworthy delivery** | Cache-before-type; **Recorder + ordered delivery queue** (strict record-order, no interleaving); generous-window **hands-free auto-type**; `replay-last` recovery; audio cues + `notify-send` (exceptional only). | Robust + clobber-recoverable. |
+| **S4 — Accuracy** | `initial_prompt` vocab biasing (**bounded** — ~224-token cap), correction dictionary (jargon spell-fixer), `beam-8`, empty/hallucination/sub-min-duration filtering. | Jargon comes out right. |
+| **S5 — VAD** | Single silence auto-stop via `sox` (currently a missing dependency), threshold config. | Hands-free single utterance. |
+| **S6 — Continuous mode** ⭐ | Talk → short pauses cut **Clips** → pipelined batch transcribe (context-chained via prev-clip tail) → assemble **Session** transcript → deliver; long silence (~10 s) ends it. | **The north-star.** (ADR-0002) |
+| **S7 — Packaging** | PKGBUILD (vendored whisper.cpp Vulkan build), systemd user unit, first-run model download, `install-hotkeys`, a `doctor` command (ydotoold/udev/`YDOTOOL_SOCKET`), README. | Distributable. |
+
+Each slice = one PRD = one tracer bullet, TDD'd **inside-out**: pure `core` logic first (real
+objects, no mocks), then boundary adapters with real-subprocess integration tests.
 
 ## Resolved decisions (supersedes original open questions)
 
@@ -390,3 +394,17 @@ Ordered so each slice is independently demoable and de-risks the next.
 | Code-symbol substitution | ❌ removed — **English prose only** + jargon correction |
 | Auto-submit | ❌ off — human reviews before Enter |
 | sounddevice/pyaudio | n/a — `pw-record`/`sox` shell-out |
+
+### Refinements (plan-grilling session, 2026-06-20)
+
+Latest layer; where this conflicts with earlier prose, this and `CONTEXT.md`/`docs/adr/` win.
+
+| Earlier in this plan | Refined to |
+|---|---|
+| Single linear FSM (Idle→Recording→Transcribing); `toggle` during Transcribing **ignored** | **Recorder + ordered delivery queue** — a new recording can start while prior utterances transcribe/type; strict record-order delivery, **no interleaving**, **cache-before-type** so a transcript is never lost |
+| 30 s auto-type window as a focus-safety gate; `replay-last` as the recovery path | **Hands-free auto-type** with a *generous* freshness window (~15 min) as a pure backstop; `replay-last` is **recovery-only**, not the happy path |
+| "model is primary, CPU is a capable fallback" | No latency target — **accuracy-first**; CPU fallback effectively **dropped** (GPU-only) |
+| GPU: "confirm RADV used, not CPU" | **Pin by PCI address** config key + **load-name assertion**; two RADV devices make this mandatory (ADR-0001) |
+| Endpointing implies batch only | Batch-first (ADR-0002); **Continuous mode** (silence-segmented clip pipeline) is the **north-star** |
+| No recording length bound | `max_recording_seconds` ≈ 900 s safety cap (enqueue on hit); also backstops the VAD "never speak" hang |
+| `replay-last` covers recovery | Known gap: only recovers the *most recent* transcript; multi-held `replay-all` is a future item |
