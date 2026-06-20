@@ -328,8 +328,11 @@ fn socket_path() -> Result<PathBuf> {
 }
 
 fn health_check_ydotoold() {
-    let socket = std::env::var("YDOTOOL_SOCKET")
-        .unwrap_or_else(|_| "/run/user/0/.ydotool_socket".to_owned());
+    let socket = std::env::var("YDOTOOL_SOCKET").unwrap_or_else(|_| {
+        std::env::var("XDG_RUNTIME_DIR")
+            .map(|dir| format!("{dir}/.ydotool_socket"))
+            .unwrap_or_else(|_| "/tmp/.ydotool_socket".to_owned())
+    });
     if !std::path::Path::new(&socket).exists() {
         warn!("ydotoold socket not found at {socket} — injection will fail until it runs");
         notify("ghostty-voice: ydotoold not reachable — injection will fail");
