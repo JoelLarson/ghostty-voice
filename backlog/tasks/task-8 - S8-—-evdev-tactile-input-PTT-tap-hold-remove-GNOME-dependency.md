@@ -1,9 +1,11 @@
 ---
 id: TASK-8
 title: 'S8 — evdev tactile input (PTT/tap/hold), remove GNOME dependency'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - Joel Larson
 created_date: '2026-06-20 20:40'
+updated_date: '2026-06-20 21:10'
 labels:
   - needs-triage
 dependencies: []
