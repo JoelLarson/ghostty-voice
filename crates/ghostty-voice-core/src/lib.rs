@@ -12,6 +12,7 @@ pub mod filter;
 pub mod hotkeys;
 pub mod inject;
 pub mod machine;
+pub mod model;
 pub mod pipeline;
 pub mod prompt;
 pub mod protocol;
