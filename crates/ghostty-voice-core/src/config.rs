@@ -67,6 +67,18 @@ pub struct AudioConfig {
     /// Recordings shorter than this are discarded (accidental blips type
     /// nothing). Default 0.3 s.
     pub min_duration_seconds: f64,
+    /// Continuous mode (S6): a pause this long (below `vad_threshold_pct`) cuts
+    /// the current clip and starts the next. Shorter than `session_end` — the
+    /// clip-cut threshold of the dual-threshold split. Real-mic tunable.
+    pub clip_cut_pause_seconds: f32,
+    /// Continuous mode (S6): a trailing silence this long ends the whole session
+    /// and delivers the assembled transcript hands-free (~10 s). The session-end
+    /// threshold of the dual-threshold split. Real-mic tunable.
+    pub session_end_silence_seconds: f32,
+    /// Continuous mode (S6): clips shorter than this are accumulated into the
+    /// next rather than transcribed alone, so stutters and micro-pauses don't
+    /// spray tiny hallucination-prone fragments at Whisper (~2-3 s).
+    pub min_clip_seconds: f32,
 }
 
 /// `[inject]` — `ydotool` typing behavior.
@@ -126,6 +138,9 @@ impl Default for AudioConfig {
             min_duration_seconds: 0.3,
             vad_silence_seconds: 2.0,
             vad_threshold_pct: 3,
+            clip_cut_pause_seconds: 1.0,
+            session_end_silence_seconds: 10.0,
+            min_clip_seconds: 2.0,
         }
     }
 }
@@ -198,6 +213,9 @@ mod tests {
         assert_eq!(cfg.audio.min_duration_seconds, 0.3);
         assert_eq!(cfg.audio.vad_silence_seconds, 2.0);
         assert_eq!(cfg.audio.vad_threshold_pct, 3);
+        assert_eq!(cfg.audio.clip_cut_pause_seconds, 1.0);
+        assert_eq!(cfg.audio.session_end_silence_seconds, 10.0);
+        assert_eq!(cfg.audio.min_clip_seconds, 2.0);
         assert!(cfg.corrections.is_empty());
         assert_eq!(cfg.inject.key_delay_ms, 12);
         assert_eq!(cfg.feedback.sound_start, "");
@@ -234,6 +252,9 @@ max_recording_seconds = 600
 min_duration_seconds = 0.5
 vad_silence_seconds = 1.5
 vad_threshold_pct = 5
+clip_cut_pause_seconds = 1.2
+session_end_silence_seconds = 8.0
+min_clip_seconds = 3.0
 
 [inject]
 key_delay_ms = 20
@@ -265,6 +286,9 @@ retry_window_seconds = 1200
         assert_eq!(cfg.audio.min_duration_seconds, 0.5);
         assert_eq!(cfg.audio.vad_silence_seconds, 1.5);
         assert_eq!(cfg.audio.vad_threshold_pct, 5);
+        assert_eq!(cfg.audio.clip_cut_pause_seconds, 1.2);
+        assert_eq!(cfg.audio.session_end_silence_seconds, 8.0);
+        assert_eq!(cfg.audio.min_clip_seconds, 3.0);
         assert_eq!(cfg.corrections.get("why do tool").unwrap(), "ydotool");
         assert_eq!(cfg.corrections.get("ghosty").unwrap(), "Ghostty");
         assert_eq!(cfg.inject.key_delay_ms, 20);
