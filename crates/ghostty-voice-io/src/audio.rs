@@ -57,6 +57,34 @@ pub fn spawn_vad_recorder(
         .context("failed to start sox (is sox installed?)")
 }
 
+/// Start a continuous-mode (S6) session capture from `device` into the clip
+/// `out_template` (a path with `%n`, e.g. `<dir>/clip-%n.wav`, that `sox`
+/// expands to the clip index). `sox` records one long session and splits it
+/// into numbered, silence-bounded clips via `silence ... : newfile : restart`,
+/// cutting a new clip after `clip_pause_seconds` of trailing silence below
+/// `threshold_pct`. The daemon watches the dir, transcribes each finalized clip
+/// in order, and ends the session itself on the long session-end silence; the
+/// caller stops `sox` (SIGINT) on session-end or cancel via [`stop_recorder`].
+pub fn spawn_continuous_recorder(
+    device: &str,
+    out_template: &Path,
+    clip_pause_seconds: f32,
+    threshold_pct: u32,
+) -> Result<Child> {
+    let argv = ghostty_voice_core::vad::continuous_record_args(
+        &out_template.to_string_lossy(),
+        clip_pause_seconds,
+        threshold_pct,
+    );
+    let mut cmd = Command::new("sox");
+    cmd.args(&argv);
+    if device != "default" {
+        cmd.env("AUDIODEV", device);
+    }
+    cmd.spawn()
+        .context("failed to start sox (is sox installed?)")
+}
+
 /// Stop a recorder cleanly (SIGINT, then wait for exit).
 pub fn stop_recorder(child: &mut Child) -> Result<()> {
     let pid = Pid::from_raw(child.id() as i32);
@@ -287,6 +315,89 @@ mod tests {
 
         let _ = std::fs::remove_file(&src);
         let _ = std::fs::remove_file(&out);
+    }
+
+    /// Real `sox`, file source: the continuous-mode multi-clip split. A session
+    /// of three tone bursts separated by 1.5 s pauses is fed through the exact
+    /// `silence ... : newfile : restart` effect the continuous recorder builds.
+    /// sox must spray it into multiple numbered clip files (`clip-1.wav`,
+    /// `clip-2.wav`, …) — proof the splitter cuts on the clip-cut pause and
+    /// reopens the next clip, so the daemon's dir-watcher sees ordered clips.
+    #[test]
+    fn sox_continuous_split_writes_multiple_numbered_clips() {
+        if !sox_available() {
+            eprintln!("skipping: sox not installed");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("gv-cont-split-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("src.wav");
+
+        // Three 0.6 s tones separated by 1.5 s of silence (well over a 1 s
+        // clip-cut pause), plus trailing silence — a segmented "session".
+        let synth = Command::new("sox")
+            .args([
+                "-r",
+                "16000",
+                "-c",
+                "1",
+                "-b",
+                "16",
+                "-e",
+                "signed-integer",
+                "-n",
+            ])
+            .arg(&src)
+            .args(["synth", "0.6", "sine", "440"])
+            .args(["pad", "0", "1.5"])
+            .args(["repeat", "2"])
+            .status()
+            .expect("sox synth session");
+        assert!(synth.success(), "sox synth failed");
+
+        // The exact continuous split effect: cut after 1 s of silence @ 3%,
+        // newfile + restart. Output template uses %n for the clip index.
+        let template = dir.join("clip-%n.wav");
+        let effect = ghostty_voice_core::vad::continuous_split_effect(1.0, 3);
+        let status = Command::new("sox")
+            .arg(&src)
+            .arg(&template)
+            .args(&effect)
+            .status()
+            .expect("sox split");
+        assert!(status.success(), "sox split effect failed");
+
+        // sox must have written more than one numbered clip, in order.
+        let mut clips: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n.starts_with("clip-") && n.ends_with(".wav"))
+                    .unwrap_or(false)
+            })
+            .collect();
+        clips.sort();
+        // sox zero-pads the index (clip-01.wav, clip-02.wav, …); a final
+        // `restart` after the trailing silence may open one empty header-only
+        // clip — the daemon skips zero-duration clips, so we count the real ones.
+        let with_audio: Vec<&std::path::PathBuf> = clips
+            .iter()
+            .filter(|c| {
+                wav_duration(c)
+                    .map(|d| d > Duration::from_millis(100))
+                    .unwrap_or(false)
+            })
+            .collect();
+        assert!(
+            with_audio.len() >= 3,
+            "expected one clip per tone burst (3), got {} from {clips:?}",
+            with_audio.len(),
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Real `sox`: a SIGINT (what [`stop_recorder`] sends, the `toggle`

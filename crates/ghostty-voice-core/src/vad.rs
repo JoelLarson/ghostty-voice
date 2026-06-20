@@ -22,7 +22,46 @@ pub fn silence_effect(silence_seconds: f32, threshold_pct: u32) -> Vec<String> {
 
 /// Full `sox` argv to record a 16 kHz mono s16 WAV that auto-stops on silence.
 pub fn record_args(out: &str, silence_seconds: f32, threshold_pct: u32) -> Vec<String> {
-    let mut argv = vec![
+    let mut argv = record_prefix(out);
+    argv.extend(silence_effect(silence_seconds, threshold_pct));
+    argv
+}
+
+/// The continuous-mode (S6) split effect: cut the current clip after
+/// `clip_pause_seconds` below `threshold_pct`%, then `: newfile : restart` so
+/// `sox` opens the next numbered clip and keeps recording the same session —
+/// one long capture sprayed into silence-bounded clips. The daemon watches the
+/// session dir, transcribes each finalized clip, and ends the session itself on
+/// the long session-end silence (sox's own per-clip trim is just the cut point).
+pub fn continuous_split_effect(clip_pause_seconds: f32, threshold_pct: u32) -> Vec<String> {
+    let mut effect = silence_effect(clip_pause_seconds, threshold_pct);
+    effect.extend([
+        ":".to_owned(),
+        "newfile".to_owned(),
+        ":".to_owned(),
+        "restart".to_owned(),
+    ]);
+    effect
+}
+
+/// Full `sox` argv for a continuous-mode session: record a 16 kHz mono s16 WAV
+/// into `out_template` (with `%n` expanded by sox to the clip index, e.g.
+/// `clip-%n.wav` → `clip-1.wav`, `clip-2.wav`, …), splitting on each clip-cut
+/// pause via [`continuous_split_effect`].
+pub fn continuous_record_args(
+    out_template: &str,
+    clip_pause_seconds: f32,
+    threshold_pct: u32,
+) -> Vec<String> {
+    let mut argv = record_prefix(out_template);
+    argv.extend(continuous_split_effect(clip_pause_seconds, threshold_pct));
+    argv
+}
+
+/// The shared `sox` recording prefix: quiet, default device, WAV contract
+/// (16 kHz mono s16), and the output path.
+fn record_prefix(out: &str) -> Vec<String> {
+    vec![
         "-q".to_owned(),
         "-d".to_owned(),
         "-r".to_owned(),
@@ -34,9 +73,7 @@ pub fn record_args(out: &str, silence_seconds: f32, threshold_pct: u32) -> Vec<S
         "-e".to_owned(),
         "signed-integer".to_owned(),
         out.to_owned(),
-    ];
-    argv.extend(silence_effect(silence_seconds, threshold_pct));
-    argv
+    ]
 }
 
 #[cfg(test)]
@@ -63,5 +100,33 @@ mod tests {
         let argv = record_args("/tmp/x.wav", 2.0, 3);
         assert!(argv.contains(&"/tmp/x.wav".to_owned()));
         assert_eq!(argv[argv.len() - 7], "silence");
+    }
+
+    // ---- continuous-mode multi-clip split (S6) --------------------------
+
+    #[test]
+    fn split_effect_cuts_on_clip_pause_and_restarts() {
+        // Continuous mode: stop the current clip after `clip_pause` of silence,
+        // then `: newfile : restart` so sox opens the next numbered clip and
+        // keeps recording the same session.
+        let effect = continuous_split_effect(1.0, 3);
+        assert_eq!(
+            effect,
+            vec![
+                "silence", "1", "0.1", "3%", "1", "1", "3%", ":", "newfile", ":", "restart",
+            ],
+        );
+    }
+
+    #[test]
+    fn split_args_write_numbered_clips_via_a_template_path() {
+        // sox expands `%n` in the output path to the clip index, so a session
+        // dir gets clip-1.wav, clip-2.wav, ... The argv records from the default
+        // device in the WAV contract and ends with the split effect.
+        let argv = continuous_record_args("/tmp/sess/clip-%n.wav", 1.0, 3);
+        assert!(argv.contains(&"/tmp/sess/clip-%n.wav".to_owned()));
+        assert_eq!(argv[argv.len() - 11], "silence");
+        assert_eq!(argv[argv.len() - 3], "newfile");
+        assert_eq!(argv.last().unwrap(), "restart");
     }
 }
