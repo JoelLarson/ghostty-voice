@@ -19,10 +19,14 @@ Already present: `pipewire`/`pw-record`, `ydotool`/`ydotoold`, `wl-clipboard`, `
 Install what's missing:
 
 ```sh
-sudo pacman -S --needed cmake git base-devel vulkan-headers sox
+sudo pacman -S --needed cmake git base-devel sox \
+  vulkan-headers spirv-headers spirv-tools glslang shaderc
 ```
 
-(`sox` is only needed for VAD / Continuous mode — Parts B's S5/S6 — but install it now.)
+(`sox` is only needed for VAD / Continuous mode — Part B's S5/S6 — but install it now.
+`spirv-headers`/`spirv-tools`/`glslang`/`shaderc` are the Vulkan **shader toolchain** that
+whisper.cpp's `ggml-vulkan` needs at build time — without `spirv-headers` the cmake configure
+fails with `Could not find ... SPIRV-Headers`.)
 
 ### 0.2 Build the Rust workspace
 
