@@ -1,0 +1,27 @@
+post_install() {
+  cat <<'EOF'
+==> ghostty-voice installed. Per-user setup (cannot run from package install):
+
+    1. Copy and edit the config:
+         install -Dm644 /usr/share/ghostty-voice/config.toml.example \
+           ~/.config/ghostty-voice/config.toml
+
+    2. Diagnose the injection environment (ydotoold / input group / /dev/uinput):
+         ghostty-voice-ctl doctor
+
+    3. Install the GNOME hotkeys (Super+D toggle, Super+Shift+D vad,
+       Super+Ctrl+D continuous, Super+Alt+D cancel):
+         ghostty-voice-ctl install-hotkeys
+
+    4. Enable the daemon (it fetches the ~3 GB model on first run):
+         systemctl --user enable --now ghostty-voiced
+       For dictation before/without a graphical login:
+         loginctl enable-linger "$USER"
+
+    See /usr/share/doc/ghostty-voice/README.md for the full guide.
+EOF
+}
+
+post_upgrade() {
+  post_install
+}
