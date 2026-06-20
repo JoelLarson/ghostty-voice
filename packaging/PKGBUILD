@@ -1,6 +1,6 @@
 # Maintainer: Joel Larson
 pkgname=ghostty-voice
-pkgver=0.1.5
+pkgver=0.1.6
 pkgrel=1
 pkgdesc="Voice dictation into the focused Ghostty terminal (Wayland, DE-agnostic), local Whisper over Vulkan"
 arch=('x86_64')
