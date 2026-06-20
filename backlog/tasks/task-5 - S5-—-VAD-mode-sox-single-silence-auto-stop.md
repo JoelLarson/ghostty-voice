@@ -1,9 +1,10 @@
 ---
 id: TASK-5
 title: 'S5 — VAD mode: sox single silence auto-stop'
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-06-20 07:42'
+updated_date: '2026-06-20 10:13'
 labels:
   - needs-triage
 dependencies:
