@@ -16,4 +16,5 @@ pub mod protocol;
 pub mod queue;
 pub mod supervisor;
 pub mod transcript;
+pub mod vad;
 pub mod vulkan;
