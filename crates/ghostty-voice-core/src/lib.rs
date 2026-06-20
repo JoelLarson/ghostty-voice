@@ -13,6 +13,8 @@ pub mod filter;
 pub mod gesture;
 pub mod hotkeys;
 pub mod inject;
+pub mod input;
+pub mod key_combo;
 pub mod machine;
 pub mod model;
 pub mod pipeline;
