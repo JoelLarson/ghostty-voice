@@ -10,6 +10,7 @@ pub mod cue;
 pub mod delivery;
 pub mod doctor;
 pub mod filter;
+pub mod gesture;
 pub mod hotkeys;
 pub mod inject;
 pub mod machine;
