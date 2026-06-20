@@ -27,6 +27,10 @@ enum Cmd {
     Toggle,
     /// Start a hands-free VAD recording (sox auto-stops on silence).
     Vad,
+    /// Start a hands-free Continuous-mode session: talk with pauses; clips
+    /// transcribe in the background and the assembled transcript is delivered
+    /// when you stop for a while. `cancel` aborts the whole session.
+    Continuous,
     /// Abort the current recording.
     Cancel,
     /// Print the daemon's current state.
@@ -36,7 +40,7 @@ enum Cmd {
     /// Re-inject the most-recent cached transcript (refocus Ghostty first).
     ReplayLast,
     /// Install GNOME custom keybindings (Super+D toggle, Super+Shift+D vad,
-    /// Super+Alt+D cancel).
+    /// Super+Ctrl+D continuous, Super+Alt+D cancel).
     InstallHotkeys,
     /// Diagnose the injection environment (ydotoold, input group, uinput).
     Doctor,
@@ -48,6 +52,7 @@ impl Cmd {
         Some(match self {
             Cmd::Toggle => "toggle",
             Cmd::Vad => "vad",
+            Cmd::Continuous => "continuous",
             Cmd::Cancel => "cancel",
             Cmd::Status => "status",
             Cmd::Reload => "reload",
@@ -160,6 +165,12 @@ fn install_hotkeys() -> Result<()> {
             binding: "<Super><Shift>d",
         },
         Hotkey {
+            slug: "ghostty-voice-continuous",
+            name: "ghostty-voice continuous",
+            command: format!("{exe} continuous"),
+            binding: "<Super><Control>d",
+        },
+        Hotkey {
             slug: "ghostty-voice-cancel",
             name: "ghostty-voice cancel",
             command: format!("{exe} cancel"),
@@ -184,7 +195,9 @@ fn install_hotkeys() -> Result<()> {
         run_gsettings(&["set", &target, "binding", h.binding])?;
     }
 
-    println!("Installed hotkeys: Super+D = toggle, Super+Shift+D = vad, Super+Alt+D = cancel.");
+    println!(
+        "Installed hotkeys: Super+D = toggle, Super+Shift+D = vad, Super+Ctrl+D = continuous, Super+Alt+D = cancel."
+    );
     Ok(())
 }
 
@@ -211,6 +224,11 @@ mod tests {
     #[test]
     fn vad_maps_to_the_vad_wire_word() {
         assert_eq!(Cmd::Vad.word(), Some("vad"));
+    }
+
+    #[test]
+    fn continuous_maps_to_the_continuous_wire_word() {
+        assert_eq!(Cmd::Continuous.word(), Some("continuous"));
     }
 
     #[test]
