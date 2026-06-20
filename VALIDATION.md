@@ -195,17 +195,33 @@ systemctl --user stop ghostty-voiced
 
 ---
 
-## What is NOT yet wired (so you don't test for it)
+## Part C — S7 packaging, first-run download, cues (on-hardware)
 
-These pure modules are built + unit-tested but **not yet integrated into the daemon runtime**
-(deferred until this foundation is validated):
+These are code-complete and sandbox-tested (pure logic + fake HTTP-server / fake-socket
+integration); only the hardware/network/GNOME-dependent paths remain to confirm here.
 
-- **S3** ordered delivery queue, cache-before-type, `replay-last`, audio cues.
-- **S4** accuracy stack *applied* to the request (`initial_prompt`, corrections, `beam-8`,
-  filtering) — B1/B2 currently transcribe with whisper defaults.
-- **S5** VAD mode (`Super+Shift+D`).
-- **S6** Continuous mode (talk-with-pauses).
-- **S7** first-run model auto-download (you placed the model manually in 0.4).
+- **C1 — first-run download.** Move the model aside (`mv ~/.local/share/ghostty-voice/models/
+  ggml-large-v3.bin{,.bak}`), start the daemon, and confirm: `ghostty-voice-ctl status` prints
+  `downloading`; `toggle`/`vad`/`continuous` are rejected ("model still downloading"); progress
+  `notify-send`s appear at 10% milestones; on completion it flips to `loading` then `idle` and
+  the model is back at `model_path`. Optionally pin `[whisper].model_sha256` (from the
+  HuggingFace LFS page) to confirm a verified fetch; a SHA mismatch is discarded + retried.
+- **C2 — audio cues.** With the default `config.toml.example` (`sound_start =
+  "message-new-instant"`, `sound_stop = "complete"`), confirm `canberra-gtk-play` is audible on
+  record start/stop. Switch one to a file path (e.g.
+  `/usr/share/sounds/freedesktop/stereo/bell.oga`) and confirm `paplay` plays it.
+- **C3 — clean-chroot build.** After publishing a `v0.1.0` tag, run `makepkg -si` (or a clean
+  chroot build): it builds the Rust workspace + the vendored whisper.cpp Vulkan `whisper-server`,
+  installs the three binaries + `whisper-server` + the systemd user unit + `config.toml.example`,
+  and prints the per-user `.install` setup hints. Record the tarball `sha256sum` into the
+  PKGBUILD (replace `SKIP`).
+
+## Now wired since this guide was written
+
+S3–S7 are **no longer** deferred — they are integrated into the daemon runtime (delivery queue +
+cache-before-type + `replay-last` + cues; the S4 accuracy stack applied to each request; VAD;
+Continuous mode; and S7's first-run auto-download per **Part C**). The Part B steps below
+predate that wiring; treat A1–A5 + B1–B2 as the foundation check and Part C as the S7 additions.
 
 ## Report back
 
