@@ -1,8 +1,2 @@
 /target
 /whisper.cpp
-
-# makepkg build/staging dirs (when building in-repo)
-/src
-/pkg
-/*.pkg.tar.zst
-/*.tar.gz
