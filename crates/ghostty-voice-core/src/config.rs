@@ -8,7 +8,7 @@ use serde::Deserialize;
 
 /// Top-level configuration (the S1 subset).
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub whisper: WhisperConfig,
     pub audio: AudioConfig,
@@ -17,7 +17,7 @@ pub struct Config {
 
 /// `[whisper]` — how to reach and pin the transcription server.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct WhisperConfig {
     pub host: String,
     pub port: u16,
@@ -29,14 +29,14 @@ pub struct WhisperConfig {
 
 /// `[audio]` — capture device selection.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct AudioConfig {
     pub device: String,
 }
 
 /// `[inject]` — `ydotool` typing behavior.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct InjectConfig {
     pub key_delay_ms: u32,
 }
@@ -130,5 +130,16 @@ key_delay_ms = 20
     #[test]
     fn rejects_malformed_toml() {
         assert!(Config::from_toml_str("this is = = not toml").is_err());
+    }
+
+    #[test]
+    fn rejects_unknown_field() {
+        // A typo (`por` for `port`) must fail loudly, not be silently ignored.
+        assert!(Config::from_toml_str("[whisper]\npor = 9000\n").is_err());
+    }
+
+    #[test]
+    fn rejects_unknown_section() {
+        assert!(Config::from_toml_str("[wibble]\nx = 1\n").is_err());
     }
 }
