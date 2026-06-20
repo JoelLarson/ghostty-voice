@@ -45,7 +45,8 @@ makepkg -si                    # builds the Rust workspace + a vendored whisper.
    ```sh
    ghostty-voice-ctl doctor
    ```
-5. **Hotkeys** — install the GNOME custom keybindings (Super+D toggle, Super+Alt+D cancel):
+5. **Hotkeys** — install the GNOME custom keybindings (Super+D toggle, Super+Shift+D vad,
+   Super+Ctrl+D continuous, Super+Alt+D cancel):
    ```sh
    ghostty-voice-ctl install-hotkeys
    ```
@@ -59,7 +60,15 @@ makepkg -si                    # builds the Rust workspace + a vendored whisper.
 ## Usage
 
 - **Toggle** (`Super+D`): press to start recording, press again to stop → transcribe → type.
-- **Cancel** (`Super+Alt+D`): abort the current recording.
+- **VAD** (`Super+Shift+D`): press to start; `sox` auto-stops on the first trailing silence,
+  then transcribes → types. Hands-free, single utterance.
+- **Continuous** (`Super+Ctrl+D`): the north-star, hands-free long-form mode. Talk naturally
+  with pauses; short pauses cut the audio into **clips** that batch-transcribe in the
+  background (context-chained), and a long silence (~10 s) ends the **session** — the
+  assembled transcript is then typed once. `cancel` aborts the whole session. Tune the
+  segmentation with `clip_cut_pause_seconds` / `session_end_silence_seconds` /
+  `min_clip_seconds` in `[audio]`.
+- **Cancel** (`Super+Alt+D`): abort the current recording (or the whole continuous session).
 - **Disable / free the 16 GB VRAM**: `systemctl --user stop ghostty-voiced` (cascades to
   whisper-server).
 
