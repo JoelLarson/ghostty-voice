@@ -83,6 +83,34 @@ pub fn resolve_device_index(
     }
 }
 
+/// The loaded device's reported name did not contain the expected fragment —
+/// likely the wrong GPU was selected (ADR-0001), so we refuse to proceed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceNameMismatch {
+    pub expected_contains: String,
+    pub loaded_name: String,
+}
+
+/// Verify that the loaded device's reported name contains the expected
+/// fragment (case-insensitive) — the backstop against silently pinning the
+/// wrong GPU even after resolving an index.
+pub fn verify_device_name(
+    loaded_name: &str,
+    expected_contains: &str,
+) -> Result<(), DeviceNameMismatch> {
+    if loaded_name
+        .to_lowercase()
+        .contains(&expected_contains.to_lowercase())
+    {
+        Ok(())
+    } else {
+        Err(DeviceNameMismatch {
+            expected_contains: expected_contains.to_owned(),
+            loaded_name: loaded_name.to_owned(),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,6 +202,31 @@ mod tests {
         assert_eq!(
             resolve_device_index(&devices, target),
             Err(ResolveError::AmbiguousMatch { target, count: 2 }),
+        );
+    }
+
+    const DISCRETE: &str = "AMD Radeon RX 6900 XT (RADV NAVI21)";
+    const IGPU: &str = "AMD Ryzen 9 7950X 16-Core Processor (RADV RAPHAEL_MENDOCINO)";
+
+    #[test]
+    fn accepts_matching_device_name() {
+        assert!(verify_device_name(DISCRETE, "RX 6900 XT").is_ok());
+    }
+
+    #[test]
+    fn name_match_is_case_insensitive() {
+        assert!(verify_device_name(DISCRETE, "rx 6900 xt").is_ok());
+    }
+
+    #[test]
+    fn rejects_wrong_device() {
+        let err = verify_device_name(IGPU, "RX 6900 XT").unwrap_err();
+        assert_eq!(
+            err,
+            DeviceNameMismatch {
+                expected_contains: "RX 6900 XT".to_owned(),
+                loaded_name: IGPU.to_owned(),
+            }
         );
     }
 }
