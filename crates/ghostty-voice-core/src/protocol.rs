@@ -21,11 +21,15 @@ pub enum Command {
     ReplayLast,
 }
 
-/// The daemon's observable state. `Loading` is the startup window while the
-/// model loads into VRAM — distinct from `Idle` (ready) and from S7's
-/// `Downloading`.
+/// The daemon's observable state. `Downloading` is the first-run window while
+/// the ~3 GB model is fetched (S7) — it precedes `Loading`, the window while the
+/// model loads into VRAM, which in turn precedes `Idle` (ready).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
+    /// First-run model download in progress (S7). Distinct from `Loading`:
+    /// nothing is in VRAM yet, the fetch is on the network, and it can take
+    /// minutes. Like `Loading`, only `status` is answered while downloading.
+    Downloading,
     Loading,
     Idle,
     Recording,
@@ -66,6 +70,7 @@ impl State {
     /// The wire token for this state.
     pub fn as_str(&self) -> &'static str {
         match self {
+            State::Downloading => "downloading",
             State::Loading => "loading",
             State::Idle => "idle",
             State::Recording => "recording",
@@ -114,6 +119,7 @@ mod tests {
 
     #[test]
     fn states_render_as_tokens() {
+        assert_eq!(State::Downloading.as_str(), "downloading");
         assert_eq!(State::Loading.as_str(), "loading");
         assert_eq!(State::Idle.as_str(), "idle");
         assert_eq!(State::Recording.as_str(), "recording");

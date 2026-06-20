@@ -61,6 +61,12 @@ fn reject(state: State, message: &str) -> Transition {
 /// Apply `command` to `state`, returning the resulting transition.
 pub fn apply(state: State, command: Command) -> Transition {
     match (state, command) {
+        // While the first-run model download runs, only status is answered; the
+        // rest are rejected (the daemon notifies). Nothing is operable yet — the
+        // model isn't even on disk, let alone in VRAM.
+        (State::Downloading, Command::Status) => go(State::Downloading, Action::None),
+        (State::Downloading, _) => reject(State::Downloading, "model still downloading"),
+
         // While the model loads, only status is answered; the rest are rejected.
         (State::Loading, Command::Status) => go(State::Loading, Action::None),
         (State::Loading, _) => reject(State::Loading, "model still loading"),
@@ -250,6 +256,44 @@ mod tests {
         let t = apply(State::Recording, Command::Reload);
         assert_eq!(t.next, State::Recording);
         assert_eq!(t.action, Action::ReloadConfig);
+    }
+
+    #[test]
+    fn downloading_rejects_recording_commands_with_a_clear_message() {
+        // First-run model download (S7): toggle/vad/continuous must be rejected
+        // (the daemon notifies "model still downloading"), never hang or start a
+        // recording with no model to transcribe against.
+        for cmd in [Command::Toggle, Command::Vad, Command::Continuous] {
+            let t = apply(State::Downloading, cmd);
+            assert_eq!(t.next, State::Downloading, "stays in Downloading");
+            assert_eq!(t.action, Action::None, "no recording starts");
+            match &t.response {
+                Response::Err(msg) => assert!(
+                    msg.contains("download"),
+                    "rejection should mention downloading, got {msg:?}"
+                ),
+                other => panic!("expected an Err response, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn downloading_reports_status_without_changing_state() {
+        let t = apply(State::Downloading, Command::Status);
+        assert_eq!(t.next, State::Downloading);
+        assert_eq!(t.action, Action::None);
+        assert_eq!(t.response, Response::Ok(State::Downloading));
+    }
+
+    #[test]
+    fn downloading_rejects_replay_and_reload_too() {
+        // Nothing is operable until the model lands; only status is answered.
+        for cmd in [Command::ReplayLast, Command::Reload, Command::Cancel] {
+            assert!(
+                matches!(apply(State::Downloading, cmd).response, Response::Err(_)),
+                "{cmd:?} must be rejected while downloading"
+            );
+        }
     }
 
     #[test]
