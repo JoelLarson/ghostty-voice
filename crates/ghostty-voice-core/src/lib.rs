@@ -5,6 +5,7 @@
 
 pub mod config;
 pub mod inject;
+pub mod machine;
 pub mod protocol;
 pub mod transcript;
 pub mod vulkan;
