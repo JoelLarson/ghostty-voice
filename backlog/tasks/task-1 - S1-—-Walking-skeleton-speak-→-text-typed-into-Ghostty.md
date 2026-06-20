@@ -4,7 +4,7 @@ title: 'S1 — Walking skeleton: speak → text typed into Ghostty'
 status: Done
 assignee: []
 created_date: '2026-06-20 07:26'
-updated_date: '2026-06-20 08:28'
+updated_date: '2026-06-20 09:28'
 labels:
   - needs-triage
 dependencies: []
@@ -106,5 +106,5 @@ Seed Cargo workspace (ghostty-voice-core lib + skeleton bin). Build pure core mo
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
-Code-complete: 4 pure core modules (vulkan/config/inject/transcript, 33 unit tests) + bin adapters (pw-record, reqwest multipart, ydotool) + orchestrator + transport integration test. All green, clippy+fmt clean. PENDING ON-HARDWARE (cannot run in this env): real pw-record->whisper-server(GPU)->ydotool e2e and the warm-latency number — needs the vendored whisper.cpp Vulkan build + mic + ydotoold. whisper-server launched manually for S1.
+HARDWARE-VALIDATED (2026-06-20): speak->transcribe->type works end-to-end on the workstation. large-v3 on RX 6900 XT via Vulkan = 0.23s for 7.5s audio (~33x realtime, GPU confirmed). ydotool injection clean at key_delay_ms=12 (no drops). Raw large-v3 jargon accuracy good. Foundation trusted; S3-S6 can be wired onto it.
 <!-- SECTION:NOTES:END -->
