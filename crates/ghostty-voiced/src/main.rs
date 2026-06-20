@@ -239,7 +239,7 @@ async fn ensure_model_present(daemon: &Arc<Mutex<Daemon>>) {
                 return;
             }
             Err(e) => {
-                error!("model download failed (attempt {attempt}): {e}");
+                error!("model download failed (attempt {attempt}): {e:#}");
                 notify("ghostty-voice: model download failed — retrying");
                 tokio::time::sleep(backoff.delay(attempt)).await;
             }
