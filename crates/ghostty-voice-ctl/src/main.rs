@@ -154,12 +154,13 @@ fn bind() -> Result<()> {
 
     let cfg = load_config();
     let selector = cfg.input.device.clone();
-    let (path, mut device) = ghostty_voice_io::input::open_device(&selector).with_context(|| {
-        format!(
-            "cannot open input device {selector:?} — are you in the 'input' group? \
+    let (path, mut device) =
+        ghostty_voice_io::input::open_device(&selector).with_context(|| {
+            format!(
+                "cannot open input device {selector:?} — are you in the 'input' group? \
              (run `ghostty-voice-ctl doctor`)"
-        )
-    })?;
+            )
+        })?;
     println!(
         "Reading from: {} [{}]\n",
         ghostty_voice_io::input::device_name(&device),

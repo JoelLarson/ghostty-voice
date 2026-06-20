@@ -159,7 +159,11 @@ mod tests {
         // Sanity-check the shipped default steers clear of every warning.
         let p = BindProbes {
             combo: KeyCombo {
-                modifiers: crate::key_combo::Modifiers { shift: true, ctrl: false, alt: false },
+                modifiers: crate::key_combo::Modifiers {
+                    shift: true,
+                    ctrl: false,
+                    alt: false,
+                },
                 key: codes::KEY_F10,
             },
             gsettings_bound: false,

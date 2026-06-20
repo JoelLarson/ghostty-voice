@@ -85,7 +85,8 @@ impl KeyCombo {
                     Modifier::Alt => modifiers.alt = true,
                 },
                 None => {
-                    let code = key_code(token).ok_or_else(|| ComboError::UnknownKey(token.to_owned()))?;
+                    let code =
+                        key_code(token).ok_or_else(|| ComboError::UnknownKey(token.to_owned()))?;
                     if key.is_some() {
                         return Err(ComboError::MultipleKeys);
                     }
@@ -145,23 +146,75 @@ fn modifier_of(token: &str) -> Option<Modifier> {
 /// scancode order (the kernel's), not alphabetical.
 const KEYS: &[(&str, u16)] = &[
     // Function keys.
-    ("F1", 59), ("F2", 60), ("F3", 61), ("F4", 62), ("F5", 63), ("F6", 64),
-    ("F7", 65), ("F8", 66), ("F9", 67), ("F10", 68), ("F11", 87), ("F12", 88),
+    ("F1", 59),
+    ("F2", 60),
+    ("F3", 61),
+    ("F4", 62),
+    ("F5", 63),
+    ("F6", 64),
+    ("F7", 65),
+    ("F8", 66),
+    ("F9", 67),
+    ("F10", 68),
+    ("F11", 87),
+    ("F12", 88),
     // Digits.
-    ("1", 2), ("2", 3), ("3", 4), ("4", 5), ("5", 6),
-    ("6", 7), ("7", 8), ("8", 9), ("9", 10), ("0", 11),
+    ("1", 2),
+    ("2", 3),
+    ("3", 4),
+    ("4", 5),
+    ("5", 6),
+    ("6", 7),
+    ("7", 8),
+    ("8", 9),
+    ("9", 10),
+    ("0", 11),
     // Letters (scancode order).
-    ("Q", 16), ("W", 17), ("E", 18), ("R", 19), ("T", 20), ("Y", 21),
-    ("U", 22), ("I", 23), ("O", 24), ("P", 25),
-    ("A", 30), ("S", 31), ("D", 32), ("F", 33), ("G", 34), ("H", 35),
-    ("J", 36), ("K", 37), ("L", 38),
-    ("Z", 44), ("X", 45), ("C", 46), ("V", 47), ("B", 48), ("N", 49), ("M", 50),
+    ("Q", 16),
+    ("W", 17),
+    ("E", 18),
+    ("R", 19),
+    ("T", 20),
+    ("Y", 21),
+    ("U", 22),
+    ("I", 23),
+    ("O", 24),
+    ("P", 25),
+    ("A", 30),
+    ("S", 31),
+    ("D", 32),
+    ("F", 33),
+    ("G", 34),
+    ("H", 35),
+    ("J", 36),
+    ("K", 37),
+    ("L", 38),
+    ("Z", 44),
+    ("X", 45),
+    ("C", 46),
+    ("V", 47),
+    ("B", 48),
+    ("N", 49),
+    ("M", 50),
     // Whitespace / editing — recognized so they can be named in warnings.
-    ("Backspace", 14), ("Tab", 15), ("Enter", 28), ("Space", 57),
-    ("Esc", 1), ("Insert", 110), ("Delete", 111),
-    ("Home", 102), ("End", 107), ("PageUp", 104), ("PageDown", 109),
-    ("Up", 103), ("Down", 108), ("Left", 105), ("Right", 106),
-    ("PrintScreen", 99), ("ScrollLock", 70), ("Pause", 119),
+    ("Backspace", 14),
+    ("Tab", 15),
+    ("Enter", 28),
+    ("Space", 57),
+    ("Esc", 1),
+    ("Insert", 110),
+    ("Delete", 111),
+    ("Home", 102),
+    ("End", 107),
+    ("PageUp", 104),
+    ("PageDown", 109),
+    ("Up", 103),
+    ("Down", 108),
+    ("Left", 105),
+    ("Right", 106),
+    ("PrintScreen", 99),
+    ("ScrollLock", 70),
+    ("Pause", 119),
 ];
 
 /// The evdev keycode for a named key (case-insensitive), or `None` if unknown.
@@ -213,7 +266,11 @@ mod tests {
         assert_eq!(
             KeyCombo::parse("  shift + f9 ").unwrap(),
             KeyCombo {
-                modifiers: Modifiers { shift: true, ctrl: false, alt: false },
+                modifiers: Modifiers {
+                    shift: true,
+                    ctrl: false,
+                    alt: false
+                },
                 key: codes::KEY_F9,
             }
         );
@@ -231,7 +288,11 @@ mod tests {
         let combo = KeyCombo::parse("Ctrl+Alt+D").unwrap();
         assert_eq!(
             combo.modifiers,
-            Modifiers { shift: false, ctrl: true, alt: true }
+            Modifiers {
+                shift: false,
+                ctrl: true,
+                alt: true
+            }
         );
         assert_eq!(combo.key, key_code("D").unwrap());
     }
@@ -258,7 +319,13 @@ mod tests {
     #[test]
     fn matches_exact_modifier_state() {
         let combo = KeyCombo::parse("Shift+F10").unwrap();
-        assert!(combo.matches(codes::KEY_F10, Modifiers { shift: true, ..Modifiers::NONE }));
+        assert!(combo.matches(
+            codes::KEY_F10,
+            Modifiers {
+                shift: true,
+                ..Modifiers::NONE
+            }
+        ));
     }
 
     #[test]
@@ -274,14 +341,24 @@ mod tests {
         let combo = KeyCombo::parse("Shift+F10").unwrap();
         assert!(!combo.matches(
             codes::KEY_F10,
-            Modifiers { shift: true, ctrl: true, alt: false }
+            Modifiers {
+                shift: true,
+                ctrl: true,
+                alt: false
+            }
         ));
     }
 
     #[test]
     fn does_not_match_a_different_key() {
         let combo = KeyCombo::parse("Shift+F10").unwrap();
-        assert!(!combo.matches(codes::KEY_F9, Modifiers { shift: true, ..Modifiers::NONE }));
+        assert!(!combo.matches(
+            codes::KEY_F9,
+            Modifiers {
+                shift: true,
+                ..Modifiers::NONE
+            }
+        ));
     }
 
     #[test]

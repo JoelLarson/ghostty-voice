@@ -498,7 +498,10 @@ async fn handle_button(daemon: &Arc<Mutex<Daemon>>, event: ButtonEvent) {
     };
     if let Some(command) = ghostty_voice_core::gesture::command_for(state, event, threshold) {
         let response = apply_command(command, daemon).await;
-        info!("input gesture {event:?} -> {command:?}: {}", response.encode());
+        info!(
+            "input gesture {event:?} -> {command:?}: {}",
+            response.encode()
+        );
     }
 }
 

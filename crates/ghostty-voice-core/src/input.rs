@@ -27,10 +27,18 @@ pub struct RawKeyEvent {
 
 impl RawKeyEvent {
     pub fn down(code: u16, time: Duration) -> RawKeyEvent {
-        RawKeyEvent { code, pressed: true, time }
+        RawKeyEvent {
+            code,
+            pressed: true,
+            time,
+        }
     }
     pub fn up(code: u16, time: Duration) -> RawKeyEvent {
-        RawKeyEvent { code, pressed: false, time }
+        RawKeyEvent {
+            code,
+            pressed: false,
+            time,
+        }
     }
 }
 
@@ -181,7 +189,10 @@ mod tests {
         );
         assert_eq!(
             t.feed(RawKeyEvent::up(codes::KEY_F10, ms(180))),
-            Some(ButtonEvent::Up { button: Button::Start, held: ms(80) }),
+            Some(ButtonEvent::Up {
+                button: Button::Start,
+                held: ms(80)
+            }),
         );
     }
 
@@ -208,7 +219,10 @@ mod tests {
         // Then the key up — still resolves Start, with the full hold.
         assert_eq!(
             t.feed(RawKeyEvent::up(codes::KEY_F10, ms(420))),
-            Some(ButtonEvent::Up { button: Button::Start, held: ms(415) }),
+            Some(ButtonEvent::Up {
+                button: Button::Start,
+                held: ms(415)
+            }),
         );
     }
 
@@ -222,7 +236,10 @@ mod tests {
         );
         assert_eq!(
             t.feed(RawKeyEvent::up(codes::KEY_F9, ms(600))),
-            Some(ButtonEvent::Up { button: Button::Stop, held: ms(590) }),
+            Some(ButtonEvent::Up {
+                button: Button::Stop,
+                held: ms(590)
+            }),
         );
     }
 
@@ -241,7 +258,10 @@ mod tests {
         // The eventual release still resolves once, measured from the FIRST down.
         assert_eq!(
             t.feed(RawKeyEvent::up(codes::KEY_F10, ms(110))),
-            Some(ButtonEvent::Up { button: Button::Start, held: ms(100) }),
+            Some(ButtonEvent::Up {
+                button: Button::Start,
+                held: ms(100)
+            }),
         );
     }
 
@@ -252,11 +272,17 @@ mod tests {
         let mut t = tracker();
         t.feed(RawKeyEvent::down(codes::KEY_LEFTSHIFT, ms(0)));
         assert_eq!(
-            t.feed(RawKeyEvent::down(crate::key_combo::key_code("A").unwrap(), ms(10))),
+            t.feed(RawKeyEvent::down(
+                crate::key_combo::key_code("A").unwrap(),
+                ms(10)
+            )),
             None,
         );
         assert_eq!(
-            t.feed(RawKeyEvent::up(crate::key_combo::key_code("A").unwrap(), ms(60))),
+            t.feed(RawKeyEvent::up(
+                crate::key_combo::key_code("A").unwrap(),
+                ms(60)
+            )),
             None,
         );
     }
@@ -296,6 +322,9 @@ mod tests {
         t.feed(RawKeyEvent::down(codes::KEY_LEFTSHIFT, ms(1000)));
         t.feed(RawKeyEvent::down(codes::KEY_F9, ms(1010)));
         let stop_up = t.feed(RawKeyEvent::up(codes::KEY_F9, ms(1080))).unwrap();
-        assert_eq!(command_for(state, stop_up, threshold), Some(Command::Toggle));
+        assert_eq!(
+            command_for(state, stop_up, threshold),
+            Some(Command::Toggle)
+        );
     }
 }

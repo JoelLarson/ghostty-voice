@@ -84,7 +84,9 @@ mod tests {
         assert_eq!(prog, "paplay");
         assert_eq!(
             args,
-            vec![OsString::from("/usr/share/sounds/freedesktop/stereo/bell.oga")]
+            vec![OsString::from(
+                "/usr/share/sounds/freedesktop/stereo/bell.oga"
+            )]
         );
     }
 }
