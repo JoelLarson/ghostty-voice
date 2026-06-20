@@ -369,6 +369,19 @@ async fn transcribe_with_retry(
             "initial_prompt vocab exceeds the ~224-token cap — later terms dropped; trim [whisper].vocab"
         );
     }
+
+    // Sub-min-duration recordings (accidental blips) are discarded up front — no
+    // need to bother whisper-server. `should_discard` re-checks duration too.
+    let min_duration = Duration::from_secs_f64(config.audio.min_duration_seconds);
+    let audio_duration = ghostty_voice_io::audio::wav_duration(wav).unwrap_or_else(|e| {
+        warn!("could not read WAV duration ({e}); skipping the duration filter");
+        min_duration // treat as just-long-enough so the text filter still runs
+    });
+    if audio_duration < min_duration {
+        info!("recording shorter than min_duration — discarded, nothing typed");
+        return Ok(None);
+    }
+
     let started = Instant::now();
 
     loop {
@@ -382,7 +395,18 @@ async fn transcribe_with_retry(
             Ok(body) => {
                 let transcript =
                     parse_transcript(&body).map_err(|e| anyhow::anyhow!("parse: {e:?}"))?;
-                return Ok((!transcript.is_empty()).then_some(transcript));
+                // Pure accuracy pipeline: discard junk (type nothing) or correct
+                // the surviving transcript before it is typed.
+                let final_text = ghostty_voice_core::pipeline::finalize_transcript(
+                    &transcript,
+                    audio_duration,
+                    min_duration,
+                    &config.corrections,
+                );
+                if final_text.is_none() {
+                    info!("transcript filtered (empty/hallucination) — nothing typed");
+                }
+                return Ok(final_text);
             }
             Err(e) => {
                 if started.elapsed() >= window || daemon.lock().await.shutting_down {
