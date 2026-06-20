@@ -9,5 +9,8 @@ ghostty-voice-core = { path = "../ghostty-voice-core" }
 anyhow = "1.0.102"
 chrono = { version = "0.4.40", default-features = false, features = ["clock"] }
 nix = { version = "0.31.3", features = ["signal"] }
-reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "multipart"] }
+# rustls: pure-Rust TLS compiled into the binary for the HTTPS model download
+# (HuggingFace) — no external program, no system OpenSSL. The whisper transport
+# itself is plain localhost HTTP.
+reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "multipart", "rustls"] }
 sha2 = "0.11.0"
