@@ -13,14 +13,17 @@
 
 mod vulkan_enum;
 
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::process::Child as RecorderChild;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use ghostty_voice_core::config::{Config, expand_tilde};
 use ghostty_voice_core::delivery::Delivery;
+use ghostty_voice_core::gesture::ButtonEvent;
 use ghostty_voice_core::machine::{self, Action};
 use ghostty_voice_core::protocol::{Command, ProtocolError, Response, State};
 use ghostty_voice_core::queue::DeliveryQueue;
@@ -127,6 +130,12 @@ async fn main() -> Result<()> {
 
     let supervisor = tokio::spawn(supervise(daemon.clone()));
 
+    // Tactile triggers (S8): read the one configured evdev device directly and
+    // drive recording via the gesture mapper. `input_shutdown` lets the reader
+    // thread stop reconnecting once we begin teardown.
+    let input_shutdown = Arc::new(AtomicBool::new(false));
+    spawn_input_listener(daemon.clone(), input_shutdown.clone());
+
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
     info!("ghostty-voiced listening on {}", socket.display());
@@ -149,6 +158,7 @@ async fn main() -> Result<()> {
     }
 
     info!("shutting down — freeing VRAM");
+    input_shutdown.store(true, Ordering::Relaxed);
     supervisor.abort();
     teardown(&daemon).await;
     let _ = std::fs::remove_file(&socket);
@@ -373,7 +383,13 @@ async fn process_command(line: &str, daemon: &Arc<Mutex<Daemon>>) -> Response {
             return Response::Err(format!("unknown command: {word}"));
         }
     };
+    apply_command(command, daemon).await
+}
 
+/// Drive one command through the state machine and perform its action. Shared by
+/// the control socket and the evdev input listener (gestures resolve to the same
+/// `Command`s), so both paths obey identical transition rules.
+async fn apply_command(command: Command, daemon: &Arc<Mutex<Daemon>>) -> Response {
     let mut d = daemon.lock().await;
     let transition = machine::apply(d.state, command);
     match perform(&mut d, daemon, transition.action).await {
@@ -382,6 +398,107 @@ async fn process_command(line: &str, daemon: &Arc<Mutex<Daemon>>) -> Response {
             transition.response
         }
         Err(e) => Response::Err(e.to_string()),
+    }
+}
+
+// ---- tactile input (evdev) -------------------------------------------------
+
+/// Wire up the evdev trigger path (S8): a blocking reader thread owns the device
+/// and the pure key-tracker, forwarding `ButtonEvent`s over a channel to an async
+/// handler that maps them (against current state) into daemon commands.
+fn spawn_input_listener(daemon: Arc<Mutex<Daemon>>, shutdown: Arc<AtomicBool>) {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ButtonEvent>();
+
+    // Reader thread: blocking evdev reads can't run on the tokio runtime.
+    let reader_daemon = daemon.clone();
+    std::thread::Builder::new()
+        .name("evdev-input".to_owned())
+        .spawn(move || input_reader_loop(reader_daemon, tx, shutdown))
+        .expect("spawning the evdev input thread");
+
+    // Handler: resolve each gesture against current state and apply it.
+    tokio::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            handle_button(&daemon, event).await;
+        }
+    });
+}
+
+/// Blocking device-read loop. Reads the configured combos/selector fresh on each
+/// (re)connect — so a `reload` or a replug picks up new bindings — builds a pure
+/// `KeyTracker`, and forwards every resolved `ButtonEvent`. On device error or
+/// disappearance it backs off and reconnects (unplug/replug recovery), until the
+/// shutdown flag is set.
+fn input_reader_loop(
+    daemon: Arc<Mutex<Daemon>>,
+    tx: tokio::sync::mpsc::UnboundedSender<ButtonEvent>,
+    shutdown: Arc<AtomicBool>,
+) {
+    use ghostty_voice_core::input::KeyTracker;
+    use ghostty_voice_core::key_combo::KeyCombo;
+
+    while !shutdown.load(Ordering::Relaxed) {
+        // Snapshot just the input config (a brief blocking lock from this thread).
+        let input_cfg = daemon.blocking_lock().config.input.clone();
+
+        let combos = KeyCombo::parse(&input_cfg.start_combo)
+            .and_then(|start| KeyCombo::parse(&input_cfg.stop_combo).map(|stop| (start, stop)));
+        let (start, stop) = match combos {
+            Ok(pair) => pair,
+            Err(e) => {
+                error!("input: invalid combo in config ({e}) — triggers disabled until fixed");
+                std::thread::sleep(Duration::from_secs(5));
+                continue;
+            }
+        };
+
+        match ghostty_voice_io::input::open_device(&input_cfg.device) {
+            Ok((path, mut device)) => {
+                info!(
+                    "input: reading {} [{}] — start={} stop={}",
+                    ghostty_voice_io::input::device_name(&device),
+                    path.display(),
+                    input_cfg.start_combo,
+                    input_cfg.stop_combo,
+                );
+                let mut tracker = KeyTracker::new(start, stop);
+                let result = ghostty_voice_io::input::read_keys(&mut device, |raw| {
+                    if shutdown.load(Ordering::Relaxed) {
+                        return ControlFlow::Break(());
+                    }
+                    if let Some(event) = tracker.feed(raw) {
+                        // A closed channel means the handler is gone (shutdown).
+                        if tx.send(event).is_err() {
+                            return ControlFlow::Break(());
+                        }
+                    }
+                    ControlFlow::Continue(())
+                });
+                if let Err(e) = result {
+                    warn!("input: device read ended ({e}) — reconnecting");
+                }
+            }
+            Err(e) => warn!("input: cannot open device ({e}) — retrying"),
+        }
+
+        if shutdown.load(Ordering::Relaxed) {
+            return;
+        }
+        std::thread::sleep(Duration::from_secs(2));
+    }
+}
+
+/// Map one tactile `ButtonEvent` to a command (against current state and the
+/// configured hold threshold) and apply it. A gesture that resolves to no
+/// command (e.g. a Start tap that latches) is silently ignored.
+async fn handle_button(daemon: &Arc<Mutex<Daemon>>, event: ButtonEvent) {
+    let (state, threshold) = {
+        let d = daemon.lock().await;
+        (d.state, d.config.input.hold_threshold())
+    };
+    if let Some(command) = ghostty_voice_core::gesture::command_for(state, event, threshold) {
+        let response = apply_command(command, daemon).await;
+        info!("input gesture {event:?} -> {command:?}: {}", response.encode());
     }
 }
 
