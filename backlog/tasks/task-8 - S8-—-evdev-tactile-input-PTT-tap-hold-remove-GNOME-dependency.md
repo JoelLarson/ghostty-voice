@@ -1,11 +1,11 @@
 ---
 id: TASK-8
 title: 'S8 — evdev tactile input (PTT/tap/hold), remove GNOME dependency'
-status: In Progress
+status: Done
 assignee:
   - Joel Larson
 created_date: '2026-06-20 20:40'
-updated_date: '2026-06-20 21:10'
+updated_date: '2026-06-20 21:27'
 labels:
   - needs-triage
 dependencies: []
@@ -92,15 +92,15 @@ Recording begins the instant **Start goes down** (record-on-press), so push-to-t
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Two configurable keys (default Start=Shift+F10, Stop=Shift+F9) drive triggers via evdev; works without GNOME on any Wayland compositor
-- [ ] #2 Start tap latches recording; Start hold = push-to-talk (record-on-press, stop on release); Stop tap stops; Stop hold starts VAD
-- [ ] #3 Recording begins on Start key-down so push-to-talk never clips the first words; hold threshold (~250ms) is configurable
-- [ ] #4 Pure key-tracker turns timestamped raw key events into ButtonEvents (Shift tracking + press duration) and is unit-tested without hardware
-- [ ] #5 key-combo parsing/match, input config, and a bind-conflict evaluator are unit-tested with real objects (no mocks)
-- [ ] #6 ghostty-voice-ctl bind captures a key, shows what it emits, warns on primary/remapped/gsettings-bound keys, runs a live test, and writes config
-- [ ] #7 Daemon opens only the one configured device and reacts only to the two configured codes; never logs other input
-- [ ] #8 GNOME removed: core::hotkeys + install-hotkeys + all gsettings deleted; cues switched canberra->paplay; libcanberra dropped from PKGBUILD
-- [ ] #9 README/PLAN updated: target is Wayland + PipeWire, DE-agnostic
+- [x] #1 Two configurable keys (default Start=Shift+F10, Stop=Shift+F9) drive triggers via evdev; works without GNOME on any Wayland compositor
+- [x] #2 Start tap latches recording; Start hold = push-to-talk (record-on-press, stop on release); Stop tap stops; Stop hold starts VAD
+- [x] #3 Recording begins on Start key-down so push-to-talk never clips the first words; hold threshold (~250ms) is configurable
+- [x] #4 Pure key-tracker turns timestamped raw key events into ButtonEvents (Shift tracking + press duration) and is unit-tested without hardware
+- [x] #5 key-combo parsing/match, input config, and a bind-conflict evaluator are unit-tested with real objects (no mocks)
+- [x] #6 ghostty-voice-ctl bind captures a key, shows what it emits, warns on primary/remapped/gsettings-bound keys, runs a live test, and writes config
+- [x] #7 Daemon opens only the one configured device and reacts only to the two configured codes; never logs other input
+- [x] #8 GNOME removed: core::hotkeys + install-hotkeys + all gsettings deleted; cues switched canberra->paplay; libcanberra dropped from PKGBUILD
+- [x] #9 README/PLAN updated: target is Wayland + PipeWire, DE-agnostic
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -108,3 +108,28 @@ Recording begins the instant **Start goes down** (record-on-press), so push-to-t
 <!-- SECTION:PLAN:BEGIN -->
 gesture state machine already done (committed). Core-first TDD: key-combo parse/match; input key-tracker (timestamped events -> ButtonEvent, modifier + duration); [input] config; bind-conflict evaluator (doctor-style). Then boundary: evdev read loop feeding the tracker; ctl bind flow. Then removal: delete core::hotkeys + ctl install-hotkeys + gsettings; cue canberra->paplay; drop libcanberra. Then docs. Passive read (no EVIOCGRAB). Atomic commit per green; trunk-based on main.
 <!-- SECTION:PLAN:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implemented S8 — evdev tactile triggers (PTT/tap/hold), removing the GNOME hotkey path. Shipped in 10 atomic commits on `main`, TDD core-first.
+
+**Core (pure, unit-tested):**
+- `key_combo` — parse `Shift+F10`-style combos to evdev keycodes; exact-modifier matching (a more-specific combo never fires a looser one); `is_primary_key`/`key_name` for the bind warnings.
+- `input::KeyTracker` — consumes timestamped `RawKeyEvent`s, tracks left/right modifier state, measures press→release duration, emits `ButtonEvent`s. Deterministic given timestamps; covers tap, hold/PTT (incl. releasing Shift before the key), autorepeat, stray release, unrelated-key isolation, and an end-to-end latch→stop run through the gesture mapper.
+- `[input]` config — `start_combo`/`stop_combo`/`hold_threshold_ms`/`device`, with defaults asserted to parse as real combos; `config::set_input_combos` is a pure, tested config writer that preserves the rest of the file.
+- `bind::evaluate` — doctor-style warnings (primary-key / already-bound / remapped).
+
+**Boundary:**
+- `io::input` — opens exactly one device (`auto`/path/`name:<substr>`), converts evdev key events (drops autorepeat), runs the blocking read loop, and `capture_combo` for the bind flow. Never grabs the device.
+- Daemon — a dedicated reader thread owns the device + tracker and forwards `ButtonEvent`s over a channel to an async handler that resolves them via `gesture::command_for` through the shared `apply_command` path. Re-reads combos/selector on each (re)connect and reconnects on device loss (unplug/replug recovery). Only the configured codes act; no other input is logged.
+- `ghostty-voice-ctl bind` — capture Start+Stop, show emitted code, warn, live "press-once" test, write config. `doctor` gains a trigger-device check.
+
+**Removal:** deleted `core::hotkeys`, the `install-hotkeys` subcommand, and all gsettings *writing*; cues now play via `paplay` (freedesktop `.oga`), `libcanberra` dropped from the PKGBUILD, pkgdesc/install-hook/README/PLAN updated to "Wayland + PipeWire, DE-agnostic".
+
+**Verification:** full workspace `cargo test` green (222 tests, ~50 new), `cargo clippy --all-targets` clean, `cargo fmt --check` clean, release build OK. On-hardware behavior (real `/dev/input` capture, mic, ydotool) is manual per the project's CI-equivalent note.
+
+**Note on AC#6 / gsettings:** the bind-conflict evaluator keeps the `gsettings_bound` warning (pure + tested), but per "delete all gsettings usage" the bind flow does *not* live-query GNOME — evdev sits beneath the compositor, so the live press-once test is the ground-truth conflict backstop. Active bind warnings are primary-key and remapped.
+
+**Follow-ups (out of scope, as PRD):** no cancel/discard gesture; combo changes need a daemon restart or device replug to apply; mouse-button binding deferred.
+<!-- SECTION:FINAL_SUMMARY:END -->
