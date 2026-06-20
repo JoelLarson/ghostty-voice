@@ -362,12 +362,19 @@ async fn transcribe_with_retry(
     let host = config.whisper.host.clone();
     let port = config.whisper.port;
     let window = Duration::from_secs(config.cache.retry_window_seconds);
+    let params =
+        ghostty_voice_io::transcribe::InferenceParams::from_whisper_config(&config.whisper);
+    if params.prompt_truncated {
+        warn!(
+            "initial_prompt vocab exceeds the ~224-token cap — later terms dropped; trim [whisper].vocab"
+        );
+    }
     let started = Instant::now();
 
     loop {
-        let (h, p, w) = (host.clone(), port, wav.to_path_buf());
+        let (h, p, w, params) = (host.clone(), port, wav.to_path_buf(), params.clone());
         let result = tokio::task::spawn_blocking(move || {
-            ghostty_voice_io::transcribe::post_inference(&h, p, &w)
+            ghostty_voice_io::transcribe::post_inference(&h, p, &w, &params)
         })
         .await?;
 

@@ -15,7 +15,17 @@ use std::thread;
 use std::time::Duration;
 
 use ghostty_voice_core::queue::DeliveryQueue;
-use ghostty_voice_io::transcribe::post_inference;
+use ghostty_voice_io::transcribe::{InferenceParams, post_inference};
+
+/// Minimal request params for the transport round-trip in this test.
+fn test_params() -> InferenceParams {
+    InferenceParams {
+        beam_size: 8,
+        temperature: 0.0,
+        initial_prompt: String::new(),
+        prompt_truncated: false,
+    }
+}
 
 /// A fake whisper-server: each accepted connection drains the request, waits
 /// `delay`, then replies with `{"text": "<reply>"}`. One thread per request.
@@ -83,7 +93,7 @@ fn queue_drains_in_record_order_despite_a_slow_first_transcription() {
     let t_a = {
         let (h, w) = (slow_host.clone(), wav_a.clone());
         thread::spawn(move || {
-            let body = post_inference(&h, slow_port, &w).unwrap();
+            let body = post_inference(&h, slow_port, &w, &test_params()).unwrap();
             let text = ghostty_voice_core::transcript::parse_transcript(&body).unwrap();
             tx.send((a, text)).unwrap();
         })
@@ -91,7 +101,7 @@ fn queue_drains_in_record_order_despite_a_slow_first_transcription() {
     let t_b = {
         let (h, w) = (fast_host.clone(), wav_b.clone());
         thread::spawn(move || {
-            let body = post_inference(&h, fast_port, &w).unwrap();
+            let body = post_inference(&h, fast_port, &w, &test_params()).unwrap();
             let text = ghostty_voice_core::transcript::parse_transcript(&body).unwrap();
             tx2.send((b, text)).unwrap();
         })

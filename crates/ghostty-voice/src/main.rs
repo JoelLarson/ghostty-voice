@@ -40,7 +40,8 @@ fn main() -> Result<()> {
 
     // Time the round-trip — this is the S1 warm-latency measurement.
     let started = Instant::now();
-    let body = transcribe::post_inference(&cfg.whisper.host, cfg.whisper.port, &wav)?;
+    let params = transcribe::InferenceParams::from_whisper_config(&cfg.whisper);
+    let body = transcribe::post_inference(&cfg.whisper.host, cfg.whisper.port, &wav, &params)?;
     let transcript =
         parse_transcript(&body).map_err(|e| anyhow!("could not parse transcript: {e:?}"))?;
     eprintln!("transcribed in {:.2}s", started.elapsed().as_secs_f64());
