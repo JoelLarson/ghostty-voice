@@ -31,16 +31,20 @@ enum Cmd {
     Status,
     /// Re-read non-model config.
     Reload,
+    /// Install GNOME custom keybindings (Super+D toggle, Super+Alt+D cancel).
+    InstallHotkeys,
 }
 
 impl Cmd {
-    fn word(&self) -> &'static str {
-        match self {
+    /// The wire word for a socket command, or `None` for local-only subcommands.
+    fn word(&self) -> Option<&'static str> {
+        Some(match self {
             Cmd::Toggle => "toggle",
             Cmd::Cancel => "cancel",
             Cmd::Status => "status",
             Cmd::Reload => "reload",
-        }
+            Cmd::InstallHotkeys => return None,
+        })
     }
 }
 
@@ -66,9 +70,72 @@ fn send_to(path: &Path, word: &str) -> Result<String> {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let response = send_to(&socket_path()?, cli.command.word())?;
-    println!("{response}");
+    match cli.command.word() {
+        Some(word) => {
+            println!("{}", send_to(&socket_path()?, word)?);
+            Ok(())
+        }
+        None => install_hotkeys(),
+    }
+}
+
+/// Install the GNOME custom keybindings via `gsettings`, merging with any
+/// already present.
+fn install_hotkeys() -> Result<()> {
+    use ghostty_voice_core::hotkeys::{
+        Hotkey, format_path_list, keybinding_path, merge_paths, parse_path_list,
+    };
+
+    const SCHEMA: &str = "org.gnome.settings-daemon.plugins.media-keys";
+    let exe = "ghostty-voice-ctl";
+    let hotkeys = [
+        Hotkey {
+            slug: "ghostty-voice-toggle",
+            name: "ghostty-voice toggle",
+            command: format!("{exe} toggle"),
+            binding: "<Super>d",
+        },
+        Hotkey {
+            slug: "ghostty-voice-cancel",
+            name: "ghostty-voice cancel",
+            command: format!("{exe} cancel"),
+            binding: "<Super><Alt>d",
+        },
+    ];
+
+    let existing = parse_path_list(&run_gsettings(&["get", SCHEMA, "custom-keybindings"])?);
+    let ours: Vec<String> = hotkeys.iter().map(|h| keybinding_path(h.slug)).collect();
+    let merged = merge_paths(&existing, &ours);
+    run_gsettings(&[
+        "set",
+        SCHEMA,
+        "custom-keybindings",
+        &format_path_list(&merged),
+    ])?;
+
+    for h in &hotkeys {
+        let target = format!("{SCHEMA}.custom-keybinding:{}", keybinding_path(h.slug));
+        run_gsettings(&["set", &target, "name", h.name])?;
+        run_gsettings(&["set", &target, "command", &h.command])?;
+        run_gsettings(&["set", &target, "binding", h.binding])?;
+    }
+
+    println!("Installed hotkeys: Super+D = toggle, Super+Alt+D = cancel.");
     Ok(())
+}
+
+fn run_gsettings(args: &[&str]) -> Result<String> {
+    let output = std::process::Command::new("gsettings")
+        .args(args)
+        .output()
+        .context("failed to run gsettings (a GNOME session is required)")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "gsettings {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
 #[cfg(test)]

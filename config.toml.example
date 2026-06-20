@@ -2,6 +2,8 @@
 # Copy to ~/.config/ghostty-voice/config.toml and edit.
 
 [whisper]
+binary        = "whisper-server"      # path or name on PATH; config so a rename isn't a rebuild
+extra_args    = []                    # passthrough launch flags
 host          = "127.0.0.1"
 port          = 8910
 model_path    = "~/.local/share/ghostty-voice/models/ggml-large-v3.bin"

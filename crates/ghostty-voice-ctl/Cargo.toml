@@ -9,5 +9,6 @@ name = "ghostty-voice-ctl"
 path = "src/main.rs"
 
 [dependencies]
+ghostty-voice-core = { path = "../ghostty-voice-core" }
 anyhow = "1.0.102"
 clap = { version = "4.6.1", features = ["derive"] }

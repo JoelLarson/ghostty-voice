@@ -1,0 +1,14 @@
+[Unit]
+Description=ghostty-voice dictation daemon
+Documentation=https://github.com/JoelLarson/ghostty-voice
+After=graphical-session.target pipewire.service
+Wants=pipewire.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/ghostty-voiced
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
