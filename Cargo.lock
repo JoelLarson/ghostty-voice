@@ -428,6 +428,7 @@ dependencies = [
  "anyhow",
  "clap",
  "ghostty-voice-core",
+ "ghostty-voice-io",
 ]
 
 [[package]]

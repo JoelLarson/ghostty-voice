@@ -6,12 +6,13 @@ post_install() {
          install -Dm644 /usr/share/ghostty-voice/config.toml.example \
            ~/.config/ghostty-voice/config.toml
 
-    2. Diagnose the injection environment (ydotoold / input group / /dev/uinput):
+    2. Diagnose the environment (ydotoold / input group / /dev/uinput / trigger device):
          ghostty-voice-ctl doctor
 
-    3. Install the GNOME hotkeys (Super+D toggle, Super+Shift+D vad,
-       Super+Ctrl+D continuous, Super+Alt+D cancel):
-         ghostty-voice-ctl install-hotkeys
+    3. Bind the tactile triggers (records to /dev/input via evdev — no GNOME):
+         ghostty-voice-ctl bind
+       Defaults are Shift+F10 (Start: tap=latch, hold=push-to-talk) and
+       Shift+F9 (Stop: tap=stop, hold=hands-free VAD).
 
     4. Enable the daemon (it fetches the ~3 GB model on first run):
          systemctl --user enable --now ghostty-voiced

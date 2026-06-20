@@ -3,14 +3,15 @@
 //! The start/stop cues can come from two sources, decided here as pure logic so
 //! the IO adapter stays a dumb dispatcher:
 //!
-//! - a **freedesktop theme event** (default), played via `canberra-gtk-play -i
-//!   <event>` — no binary assets to ship, and `canberra-gtk-play` is present on
-//!   the target box (resolved open item 1);
+//! - a **freedesktop theme event** (default) — a bare event id (e.g.
+//!   `message-new-instant`) the IO adapter maps to its `.oga` under the
+//!   freedesktop sound theme and plays via `paplay`; no binary assets to ship;
 //! - an explicit **sound file** path, played via `paplay <path>`.
 //!
-//! The config value selects between them: a `theme:` prefix (or a bare event id
-//! with no path separator) is a theme event; anything that looks like a path is
-//! a file. An empty value disables the cue.
+//! Both play through `paplay` (PipeWire) — `libcanberra` is gone (S8). The config
+//! value selects the source: a `theme:` prefix (or a bare event id with no path
+//! separator) is a theme event; anything that looks like a path is a file. An
+//! empty value disables the cue.
 
 /// How a configured cue string should be played.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,7 +20,8 @@ pub enum CueSource {
     Disabled,
     /// Play `path` as a sound file via `paplay`.
     File(String),
-    /// Play freedesktop theme event `id` via `canberra-gtk-play -i <id>`.
+    /// Play freedesktop theme event `id` (the IO adapter maps it to its `.oga`
+    /// and plays it via `paplay`).
     ThemeEvent(String),
 }
 

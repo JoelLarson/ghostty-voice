@@ -2,14 +2,15 @@
 pkgname=ghostty-voice
 pkgver=0.1.4
 pkgrel=1
-pkgdesc="Voice dictation into the focused Ghostty terminal (GNOME/Wayland), local Whisper over Vulkan"
+pkgdesc="Voice dictation into the focused Ghostty terminal (Wayland, DE-agnostic), local Whisper over Vulkan"
 arch=('x86_64')
 url="https://github.com/JoelLarson/ghostty-voice"
 license=('custom:unlicensed')
-# Runtime deps: ydotool(->ydotoold) injection, pipewire(->pw-record) + sox capture,
-# wl-clipboard, libnotify(->notify-send), Vulkan ICD loader (GPU offload),
-# libcanberra(->canberra-gtk-play) for the default theme-event cues.
-depends=('ydotool' 'pipewire' 'sox' 'wl-clipboard' 'libnotify' 'vulkan-icd-loader' 'libcanberra' 'openssl')
+# Runtime deps: ydotool(->ydotoold) injection, pipewire(->pw-record + paplay) +
+# sox capture, wl-clipboard, libnotify(->notify-send), Vulkan ICD loader (GPU
+# offload). Tactile triggers read /dev/input via evdev (the Rust crate), so no
+# GNOME/gsettings and no libcanberra — cues play through paplay (PipeWire).
+depends=('ydotool' 'pipewire' 'sox' 'wl-clipboard' 'libnotify' 'vulkan-icd-loader' 'openssl')
 makedepends=('cargo' 'cmake' 'git' 'vulkan-headers' 'spirv-headers' 'spirv-tools' 'glslang' 'shaderc')
 optdepends=('vulkan-tools: vulkaninfo, to confirm RADV sees your GPU'
             'sound-theme-freedesktop: theme sounds for the default audio cues')
@@ -59,4 +60,4 @@ package() {
 
 # The ~3 GB model is NOT packaged. It is fetched on first run by the daemon
 # (downloading state + notify): ggml-large-v3.bin -> ~/.local/share/ghostty-voice/models/.
-# Per-user setup (hotkeys, doctor, enable) is printed by the .install post-install hook.
+# Per-user setup (bind triggers, doctor, enable) is printed by the .install post-install hook.

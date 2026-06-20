@@ -3,9 +3,12 @@
 //! `ghostty-voice-ctl bind` captures a key, shows what it emitted, and warns
 //! before writing it to config. There is no unified binding registry on Linux,
 //! so warnings are best-effort heuristics (the live "press once" test is the
-//! ground-truth backstop). The probing — capturing the key, querying gsettings —
-//! happens at the IO boundary; turning probe facts into named warnings is pure
-//! and tested here, mirroring [`crate::doctor::evaluate`].
+//! ground-truth backstop). Capturing the key happens at the IO boundary; turning
+//! the captured facts into named warnings is pure and tested here, mirroring
+//! [`crate::doctor::evaluate`]. The `gsettings_bound` input models a known GNOME
+//! conflict for completeness, but the bind flow no longer queries GNOME — evdev
+//! sits beneath the compositor, so the live test is what actually confirms a key
+//! is free.
 
 use crate::key_combo::{KeyCombo, is_primary_key, key_name};
 
