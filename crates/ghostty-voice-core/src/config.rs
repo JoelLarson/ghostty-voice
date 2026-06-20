@@ -5,6 +5,7 @@
 //! out); reading the file and expanding `~` happen at the IO boundary.
 
 use serde::Deserialize;
+use std::path::{Path, PathBuf};
 
 /// Top-level configuration (the S1 subset).
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
@@ -81,6 +82,19 @@ impl Config {
     }
 }
 
+/// Expand a leading `~` or `~/...` to `home`. Paths without a leading tilde
+/// (and `~user` forms, which name a different home) are returned unchanged.
+/// `home` is injected so this stays pure and testable.
+pub fn expand_tilde(path: &str, home: &Path) -> PathBuf {
+    if path == "~" {
+        home.to_path_buf()
+    } else if let Some(rest) = path.strip_prefix("~/") {
+        home.join(rest)
+    } else {
+        PathBuf::from(path)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -141,5 +155,46 @@ key_delay_ms = 20
     #[test]
     fn rejects_unknown_section() {
         assert!(Config::from_toml_str("[wibble]\nx = 1\n").is_err());
+    }
+
+    #[test]
+    fn expands_tilde_slash() {
+        assert_eq!(
+            expand_tilde("~/.local/share/x", Path::new("/home/joel")),
+            PathBuf::from("/home/joel/.local/share/x"),
+        );
+    }
+
+    #[test]
+    fn expands_bare_tilde() {
+        assert_eq!(
+            expand_tilde("~", Path::new("/home/joel")),
+            PathBuf::from("/home/joel"),
+        );
+    }
+
+    #[test]
+    fn leaves_absolute_path_unchanged() {
+        assert_eq!(
+            expand_tilde("/models/x.bin", Path::new("/home/joel")),
+            PathBuf::from("/models/x.bin"),
+        );
+    }
+
+    #[test]
+    fn leaves_relative_path_unchanged() {
+        assert_eq!(
+            expand_tilde("models/x.bin", Path::new("/home/joel")),
+            PathBuf::from("models/x.bin"),
+        );
+    }
+
+    #[test]
+    fn does_not_expand_tilde_user() {
+        // `~bob` names a different user's home, which we can't resolve here.
+        assert_eq!(
+            expand_tilde("~bob/x", Path::new("/home/joel")),
+            PathBuf::from("~bob/x"),
+        );
     }
 }
