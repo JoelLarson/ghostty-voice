@@ -20,12 +20,17 @@ pub struct Config {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct WhisperConfig {
+    /// whisper-server binary (path or name on PATH); config so an upstream
+    /// rename is not a rebuild.
+    pub binary: String,
     pub host: String,
     pub port: u16,
     /// Raw path; may begin with `~` (expanded at the IO boundary).
     pub model_path: String,
     /// PCI address of the GPU to pin (ADR-0001).
     pub vulkan_device: String,
+    /// Extra launch flags passed through to whisper-server.
+    pub extra_args: Vec<String>,
 }
 
 /// `[audio]` — capture device selection.
@@ -45,10 +50,12 @@ pub struct InjectConfig {
 impl Default for WhisperConfig {
     fn default() -> Self {
         Self {
+            binary: "whisper-server".to_owned(),
             host: "127.0.0.1".to_owned(),
             port: 8910,
             model_path: "~/.local/share/ghostty-voice/models/ggml-large-v3.bin".to_owned(),
             vulkan_device: "0000:03:00.0".to_owned(),
+            extra_args: Vec::new(),
         }
     }
 }
@@ -103,6 +110,8 @@ mod tests {
     fn empty_config_is_all_defaults() {
         let cfg = Config::from_toml_str("").unwrap();
         assert_eq!(cfg, Config::default());
+        assert_eq!(cfg.whisper.binary, "whisper-server");
+        assert_eq!(cfg.whisper.extra_args, Vec::<String>::new());
         assert_eq!(cfg.whisper.host, "127.0.0.1");
         assert_eq!(cfg.whisper.port, 8910);
         assert_eq!(cfg.audio.device, "default");
