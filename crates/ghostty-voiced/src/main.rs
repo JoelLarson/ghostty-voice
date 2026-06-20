@@ -158,6 +158,13 @@ async fn main() -> Result<()> {
 // ---- supervision -----------------------------------------------------------
 
 async fn supervise(daemon: Arc<Mutex<Daemon>>) {
+    // First-run model fetch (S7): before any whisper-server spawn, ensure the
+    // ~3 GB model is on disk. While it downloads the daemon is in `Downloading`
+    // and rejects toggle/vad/continuous (the state machine), notifying instead
+    // of hanging. A failed fetch leaves the daemon in `Downloading` and retries
+    // on the next supervise pass rather than spinning whisper-server with no model.
+    ensure_model_present(&daemon).await;
+
     let backoff = Backoff::new(Duration::from_secs(1), Duration::from_secs(30));
     let mut failures = 0u32;
 
@@ -190,6 +197,78 @@ async fn supervise(daemon: Arc<Mutex<Daemon>>) {
         notify("ghostty-voice: whisper-server died, restarting");
         tokio::time::sleep(backoff.delay(failures)).await;
     }
+}
+
+/// Ensure the model file is on disk, fetching it on first run (S7).
+///
+/// Presence-only check (no multi-GB re-hash on every boot): if `model_path` is
+/// absent the daemon enters `Downloading`, streams the model from `model_url`
+/// with SHA-256 verification, and notifies progress at coarse milestones. The
+/// fetch is retried with backoff until it succeeds — the daemon stays in
+/// `Downloading` (commands rejected) the whole time, never spinning up
+/// whisper-server against a missing model. Returns once the model is present.
+async fn ensure_model_present(daemon: &Arc<Mutex<Daemon>>) {
+    let config = daemon.lock().await.config.clone();
+    let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
+    let model = expand_tilde(&config.whisper.model_path, &home);
+
+    let status =
+        ghostty_voice_core::model::classify(model.exists(), None, &config.whisper.model_sha256);
+    if !ghostty_voice_core::model::needs_download(&status) {
+        return; // already present — straight to Loading
+    }
+
+    set_state(daemon, State::Downloading).await;
+    info!(
+        "model not found at {} — first-run download",
+        model.display()
+    );
+    notify("ghostty-voice: downloading the ~3 GB Whisper model (first run)…");
+
+    let backoff = Backoff::new(Duration::from_secs(2), Duration::from_secs(60));
+    let mut attempt = 0u32;
+    loop {
+        if daemon.lock().await.shutting_down {
+            return;
+        }
+        attempt = attempt.saturating_add(1);
+        match download_model_once(&config, &model).await {
+            Ok(()) => {
+                info!("model download complete: {}", model.display());
+                notify("ghostty-voice: model download complete — loading…");
+                return;
+            }
+            Err(e) => {
+                error!("model download failed (attempt {attempt}): {e}");
+                notify("ghostty-voice: model download failed — retrying");
+                tokio::time::sleep(backoff.delay(attempt)).await;
+            }
+        }
+    }
+}
+
+/// One model-download attempt: stream + SHA-verify into place, emitting a
+/// `notify-send` at each new 10%-progress milestone so the user sees movement
+/// without spamming. Runs the blocking transfer off the async runtime.
+async fn download_model_once(config: &Config, dest: &Path) -> Result<()> {
+    let url = config.whisper.model_url.clone();
+    let sha = config.whisper.model_sha256.clone();
+    let dest = dest.to_path_buf();
+
+    tokio::task::spawn_blocking(move || {
+        let mut last_milestone = 0u8;
+        ghostty_voice_io::download::download_model(&url, &dest, &sha, |p| {
+            if let Some(pct) = p.percent()
+                && pct >= last_milestone.saturating_add(10)
+            {
+                last_milestone = pct - (pct % 10);
+                notify(&format!(
+                    "ghostty-voice: downloading model… {last_milestone}%"
+                ));
+            }
+        })
+    })
+    .await?
 }
 
 async fn spawn_whisper(config: &Config) -> Result<tokio::process::Child> {
