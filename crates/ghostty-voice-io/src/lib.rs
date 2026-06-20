@@ -5,5 +5,6 @@
 //! rely on lives in `ghostty-voice-core`.
 
 pub mod audio;
+pub mod cache;
 pub mod inject;
 pub mod transcribe;
