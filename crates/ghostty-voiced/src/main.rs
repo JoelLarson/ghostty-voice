@@ -281,6 +281,25 @@ async fn perform(d: &mut Daemon, daemon: &Arc<Mutex<Daemon>>, action: Action) ->
             arm_recording_cap(daemon.clone(), d.config.audio.max_recording_seconds);
             Ok(())
         }
+        Action::StartVadRecording => {
+            // Hands-free: sox self-terminates on the first trailing silence. We
+            // still track the child so a `toggle` can stop it early, and the
+            // max_recording_seconds cap backstops a never-speak hang. A watcher
+            // notices sox's own exit and enqueues the utterance.
+            let wav = fresh_wav_path();
+            let child = ghostty_voice_io::audio::spawn_vad_recorder(
+                &d.config.audio.device,
+                &wav,
+                d.config.audio.vad_silence_seconds,
+                d.config.audio.vad_threshold_pct,
+            )?;
+            d.recorder = Some(child);
+            d.current_wav = Some(wav);
+            play_start_cue(&d.config);
+            arm_recording_cap(daemon.clone(), d.config.audio.max_recording_seconds);
+            watch_vad_autostop(daemon.clone());
+            Ok(())
+        }
         Action::DiscardRecording => {
             if let Some(mut child) = d.recorder.take() {
                 ghostty_voice_io::audio::stop_recorder(&mut child)?;
@@ -514,6 +533,41 @@ fn arm_recording_cap(daemon: Arc<Mutex<Daemon>>, seconds: u64) {
             let dc = daemon.clone();
             stop_and_enqueue(&mut d, &dc).await;
             d.state = State::Idle;
+        }
+    });
+}
+
+/// Watch a VAD recording for `sox`'s own exit (it self-terminates on the first
+/// trailing silence). When sox exits while still the active recorder, enqueue
+/// the utterance — the hands-free auto-stop. A manual `toggle`/`cancel` or the
+/// time cap takes the recorder first, in which case this watcher finds nothing
+/// to do and returns.
+fn watch_vad_autostop(daemon: Arc<Mutex<Daemon>>) {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let mut d = daemon.lock().await;
+            if d.shutting_down {
+                return;
+            }
+            let exited = match d.recorder.as_mut().map(|c| c.try_wait()) {
+                // No recorder means a toggle/cancel/cap already took it: stop.
+                None => return,
+                Some(Ok(Some(_))) | Some(Err(_)) => true,
+                Some(Ok(None)) => false,
+            };
+            if exited {
+                // sox already exited and flushed its WAV; drop the handle so
+                // stop_and_enqueue doesn't try to SIGINT a dead process.
+                d.recorder = None;
+                if d.current_wav.is_some() {
+                    info!("VAD: sox auto-stopped on silence — enqueueing utterance");
+                    let dc = daemon.clone();
+                    stop_and_enqueue(&mut d, &dc).await;
+                    d.state = State::Idle;
+                }
+                return;
+            }
         }
     });
 }

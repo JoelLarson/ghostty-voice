@@ -25,6 +25,8 @@ struct Cli {
 enum Cmd {
     /// Start/stop recording (toggle).
     Toggle,
+    /// Start a hands-free VAD recording (sox auto-stops on silence).
+    Vad,
     /// Abort the current recording.
     Cancel,
     /// Print the daemon's current state.
@@ -33,7 +35,8 @@ enum Cmd {
     Reload,
     /// Re-inject the most-recent cached transcript (refocus Ghostty first).
     ReplayLast,
-    /// Install GNOME custom keybindings (Super+D toggle, Super+Alt+D cancel).
+    /// Install GNOME custom keybindings (Super+D toggle, Super+Shift+D vad,
+    /// Super+Alt+D cancel).
     InstallHotkeys,
     /// Diagnose the injection environment (ydotoold, input group, uinput).
     Doctor,
@@ -44,6 +47,7 @@ impl Cmd {
     fn word(&self) -> Option<&'static str> {
         Some(match self {
             Cmd::Toggle => "toggle",
+            Cmd::Vad => "vad",
             Cmd::Cancel => "cancel",
             Cmd::Status => "status",
             Cmd::Reload => "reload",
@@ -150,6 +154,12 @@ fn install_hotkeys() -> Result<()> {
             binding: "<Super>d",
         },
         Hotkey {
+            slug: "ghostty-voice-vad",
+            name: "ghostty-voice vad",
+            command: format!("{exe} vad"),
+            binding: "<Super><Shift>d",
+        },
+        Hotkey {
             slug: "ghostty-voice-cancel",
             name: "ghostty-voice cancel",
             command: format!("{exe} cancel"),
@@ -174,7 +184,7 @@ fn install_hotkeys() -> Result<()> {
         run_gsettings(&["set", &target, "binding", h.binding])?;
     }
 
-    println!("Installed hotkeys: Super+D = toggle, Super+Alt+D = cancel.");
+    println!("Installed hotkeys: Super+D = toggle, Super+Shift+D = vad, Super+Alt+D = cancel.");
     Ok(())
 }
 
@@ -197,6 +207,11 @@ mod tests {
     use super::*;
     use std::os::unix::net::UnixListener;
     use std::thread;
+
+    #[test]
+    fn vad_maps_to_the_vad_wire_word() {
+        assert_eq!(Cmd::Vad.word(), Some("vad"));
+    }
 
     #[test]
     fn sends_command_and_reads_reply() {

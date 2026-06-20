@@ -16,6 +16,9 @@ use crate::protocol::{Command, Response, State};
 pub enum Action {
     None,
     StartRecording,
+    /// Start a hands-free VAD recording: `sox` records and self-terminates on
+    /// the first trailing silence, then enqueues like any other utterance (S5).
+    StartVadRecording,
     /// Stop the recorder, enqueue the utterance, and kick off background
     /// transcription — the recorder is freed (Idle) so the next recording can
     /// start while this one drains through the delivery queue.
@@ -59,6 +62,14 @@ pub fn apply(state: State, command: Command) -> Transition {
 
         (State::Idle, Command::Toggle) => go(State::Recording, Action::StartRecording),
         (State::Recording, Command::Toggle) => go(State::Idle, Action::StopAndEnqueue),
+
+        // VAD starts a hands-free recording; `sox` self-terminates on the first
+        // silence. A `toggle` while it runs is the Recording+Toggle case above —
+        // a manual early stop. A `vad` arriving mid-recording is ignored (the
+        // recorder is already busy).
+        (State::Idle, Command::Vad) => go(State::Recording, Action::StartVadRecording),
+        (State::Recording, Command::Vad) => go(State::Recording, Action::None),
+        (State::Transcribing, Command::Vad) => go(State::Recording, Action::StartVadRecording),
         // The recorder is freed on stop, so it is never in Transcribing when a
         // toggle arrives; treat any stray case as starting a fresh recording.
         (State::Transcribing, Command::Toggle) => go(State::Recording, Action::StartRecording),
@@ -105,6 +116,40 @@ mod tests {
         let restarted = apply(stopped.next, Command::Toggle);
         assert_eq!(restarted.next, State::Recording);
         assert_eq!(restarted.action, Action::StartRecording);
+    }
+
+    #[test]
+    fn vad_starts_a_hands_free_recording_from_idle() {
+        let t = apply(State::Idle, Command::Vad);
+        assert_eq!(t.next, State::Recording);
+        assert_eq!(t.action, Action::StartVadRecording);
+        assert_eq!(t.response, Response::Ok(State::Recording));
+    }
+
+    #[test]
+    fn toggle_during_a_vad_recording_is_a_manual_early_stop() {
+        // VAD put the recorder in Recording; a toggle stops + enqueues it early,
+        // exactly like stopping any other recording.
+        let started = apply(State::Idle, Command::Vad);
+        let stopped = apply(started.next, Command::Toggle);
+        assert_eq!(stopped.next, State::Idle);
+        assert_eq!(stopped.action, Action::StopAndEnqueue);
+    }
+
+    #[test]
+    fn vad_while_already_recording_is_ignored() {
+        // The recorder is busy; a second vad press must not start a new capture.
+        let t = apply(State::Recording, Command::Vad);
+        assert_eq!(t.next, State::Recording);
+        assert_eq!(t.action, Action::None);
+    }
+
+    #[test]
+    fn vad_is_rejected_while_loading() {
+        assert!(matches!(
+            apply(State::Loading, Command::Vad).response,
+            Response::Err(_)
+        ));
     }
 
     #[test]

@@ -8,6 +8,8 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
     Toggle,
+    /// Start a hands-free VAD recording (sox auto-stops on first silence, S5).
+    Vad,
     Cancel,
     Status,
     Reload,
@@ -45,6 +47,7 @@ impl Command {
         let word = line.trim();
         match word.to_ascii_lowercase().as_str() {
             "toggle" => Ok(Command::Toggle),
+            "vad" => Ok(Command::Vad),
             "cancel" => Ok(Command::Cancel),
             "status" => Ok(Command::Status),
             "reload" => Ok(Command::Reload),
@@ -83,6 +86,7 @@ mod tests {
     #[test]
     fn parses_each_command() {
         assert_eq!(Command::parse("toggle").unwrap(), Command::Toggle);
+        assert_eq!(Command::parse("vad").unwrap(), Command::Vad);
         assert_eq!(Command::parse("cancel").unwrap(), Command::Cancel);
         assert_eq!(Command::parse("status").unwrap(), Command::Status);
         assert_eq!(Command::parse("reload").unwrap(), Command::Reload);
