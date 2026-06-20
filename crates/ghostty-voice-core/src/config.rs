@@ -58,6 +58,12 @@ pub struct AudioConfig {
     /// Safety cap (~900 s): on expiry the recorder stops + enqueues so a
     /// forgotten recording can't run away. Also backstops a VAD "never speak".
     pub max_recording_seconds: u64,
+    /// VAD mode (S5): seconds of trailing silence below `vad_threshold_pct`
+    /// after which `sox` self-terminates the recording. Real-mic tunable.
+    pub vad_silence_seconds: f32,
+    /// VAD mode (S5): the `sox` `silence` threshold as a percentage of full
+    /// scale; audio below this counts as silence. Real-mic tunable.
+    pub vad_threshold_pct: u32,
     /// Recordings shorter than this are discarded (accidental blips type
     /// nothing). Default 0.3 s.
     pub min_duration_seconds: f64,
@@ -118,6 +124,8 @@ impl Default for AudioConfig {
             device: "default".to_owned(),
             max_recording_seconds: 900,
             min_duration_seconds: 0.3,
+            vad_silence_seconds: 2.0,
+            vad_threshold_pct: 3,
         }
     }
 }
@@ -188,6 +196,8 @@ mod tests {
         assert_eq!(cfg.audio.device, "default");
         assert_eq!(cfg.audio.max_recording_seconds, 900);
         assert_eq!(cfg.audio.min_duration_seconds, 0.3);
+        assert_eq!(cfg.audio.vad_silence_seconds, 2.0);
+        assert_eq!(cfg.audio.vad_threshold_pct, 3);
         assert!(cfg.corrections.is_empty());
         assert_eq!(cfg.inject.key_delay_ms, 12);
         assert_eq!(cfg.feedback.sound_start, "");
@@ -222,6 +232,8 @@ vocab = ["ydotool", "Ghostty", "kubectl"]
 device = "alsa_input.pci-0000_03_00"
 max_recording_seconds = 600
 min_duration_seconds = 0.5
+vad_silence_seconds = 1.5
+vad_threshold_pct = 5
 
 [inject]
 key_delay_ms = 20
@@ -251,6 +263,8 @@ retry_window_seconds = 1200
         assert_eq!(cfg.audio.device, "alsa_input.pci-0000_03_00");
         assert_eq!(cfg.audio.max_recording_seconds, 600);
         assert_eq!(cfg.audio.min_duration_seconds, 0.5);
+        assert_eq!(cfg.audio.vad_silence_seconds, 1.5);
+        assert_eq!(cfg.audio.vad_threshold_pct, 5);
         assert_eq!(cfg.corrections.get("why do tool").unwrap(), "ydotool");
         assert_eq!(cfg.corrections.get("ghosty").unwrap(), "Ghostty");
         assert_eq!(cfg.inject.key_delay_ms, 20);
