@@ -3,3 +3,7 @@ name = "ghostty-voice-core"
 version = "0.0.0"
 edition.workspace = true
 publish.workspace = true
+
+[dependencies]
+serde = { version = "1.0.228", features = ["derive"] }
+toml = "1.1.2"
