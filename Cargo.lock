@@ -241,6 +241,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ghostty-voice-ctl"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+]
+
+[[package]]
 name = "ghostty-voice-io"
 version = "0.0.0"
 dependencies = [
