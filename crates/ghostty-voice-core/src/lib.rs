@@ -6,6 +6,7 @@
 pub mod cache;
 pub mod config;
 pub mod corrections;
+pub mod cue;
 pub mod delivery;
 pub mod doctor;
 pub mod filter;

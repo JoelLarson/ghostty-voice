@@ -52,11 +52,16 @@ min_clip_seconds = 2.0
 key_delay_ms = 12
 
 [feedback]
-# Hot-path audio cues played via paplay. Leave empty to disable a cue.
+# Hot-path audio cues. Two sources, no assets to ship:
+#   - a freedesktop THEME EVENT (default): a bare id or a "theme:" prefix, played
+#     via `canberra-gtk-play -i <id>` (e.g. "message-new-instant", "dialog-information",
+#     "bell"). Browse /usr/share/sounds/freedesktop/stereo for ids.
+#   - a FILE path (contains a "/" or starts with "~"): played via `paplay <path>`.
+#   - empty: disables that cue.
 # sound_start fires when recording begins ("now listening"); sound_stop fires
 # when recording ends and on empty/silence ("working / done").
-sound_start = ""
-sound_stop  = ""
+sound_start = "message-new-instant"
+sound_stop  = "complete"
 
 [cache]
 # WAV recordings kept as an accuracy-debugging corpus (count-capped).
