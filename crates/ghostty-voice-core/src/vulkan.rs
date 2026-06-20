@@ -115,6 +115,10 @@ pub fn verify_device_name(
 mod tests {
     use super::*;
 
+    /// The real two-RADV-device layout on the dev workstation (ADR-0001).
+    const DISCRETE: &str = "AMD Radeon RX 6900 XT (RADV NAVI21)";
+    const IGPU: &str = "AMD Ryzen 9 7950X 16-Core Processor (RADV RAPHAEL_MENDOCINO)";
+
     #[test]
     fn parses_a_full_pci_address() {
         let addr = PciAddress::parse("0000:03:00.0").expect("should parse");
@@ -145,17 +149,16 @@ mod tests {
         PciAddress::parse(s).expect("test fixture address should parse")
     }
 
-    /// The real two-RADV-device layout on the dev workstation (ADR-0001).
     fn sample_devices() -> Vec<VulkanDevice> {
         vec![
             VulkanDevice {
                 index: 0,
-                name: "AMD Radeon RX 6900 XT (RADV NAVI21)".to_owned(),
+                name: DISCRETE.to_owned(),
                 pci_address: pci("0000:03:00.0"),
             },
             VulkanDevice {
                 index: 1,
-                name: "AMD Ryzen 9 7950X 16-Core Processor (RADV RAPHAEL_MENDOCINO)".to_owned(),
+                name: IGPU.to_owned(),
                 pci_address: pci("0000:1a:00.0"),
             },
         ]
@@ -204,9 +207,6 @@ mod tests {
             Err(ResolveError::AmbiguousMatch { target, count: 2 }),
         );
     }
-
-    const DISCRETE: &str = "AMD Radeon RX 6900 XT (RADV NAVI21)";
-    const IGPU: &str = "AMD Ryzen 9 7950X 16-Core Processor (RADV RAPHAEL_MENDOCINO)";
 
     #[test]
     fn accepts_matching_device_name() {
