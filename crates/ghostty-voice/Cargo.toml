@@ -9,8 +9,7 @@ name = "ghostty-voice"
 path = "src/main.rs"
 
 [dependencies]
+ghostty-voice-core = { path = "../ghostty-voice-core" }
+ghostty-voice-io = { path = "../ghostty-voice-io" }
 anyhow = "1.0.102"
 clap = { version = "4.6.1", features = ["derive"] }
-ghostty-voice-core = { path = "../ghostty-voice-core" }
-nix = { version = "0.31.3", features = ["signal"] }
-reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "multipart"] }

@@ -228,8 +228,7 @@ dependencies = [
  "anyhow",
  "clap",
  "ghostty-voice-core",
- "nix",
- "reqwest",
+ "ghostty-voice-io",
 ]
 
 [[package]]
@@ -239,6 +238,16 @@ dependencies = [
  "serde",
  "serde_json",
  "toml",
+]
+
+[[package]]
+name = "ghostty-voice-io"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "ghostty-voice-core",
+ "nix",
+ "reqwest",
 ]
 
 [[package]]

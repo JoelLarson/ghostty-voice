@@ -6,10 +6,6 @@
 //! is to prove Vulkan transcription and ydotool injection end-to-end and to
 //! capture a real warm-latency number.
 
-mod audio;
-mod inject;
-mod transcribe;
-
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -17,6 +13,7 @@ use anyhow::{Context, Result, anyhow};
 use clap::Parser;
 use ghostty_voice_core::config::Config;
 use ghostty_voice_core::transcript::parse_transcript;
+use ghostty_voice_io::{audio, inject, transcribe};
 
 #[derive(Parser)]
 #[command(
