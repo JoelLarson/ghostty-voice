@@ -1,4 +1,4 @@
-# ghostty-voice configuration (S1 subset).
+# ghostty-voice configuration.
 # Copy to ~/.config/ghostty-voice/config.toml and edit.
 
 [whisper]
@@ -14,7 +14,27 @@ vulkan_device = "0000:03:00.0"
 [audio]
 # PipeWire source name, or "default" for the default input.
 device = "default"
+# Runaway-recording safety cap (~900 s): on expiry the recorder stops and the
+# utterance is enqueued so speech isn't lost.
+max_recording_seconds = 900
 
 [inject]
 # ydotool inter-key delay in ms — raise it if characters drop.
 key_delay_ms = 12
+
+[feedback]
+# Hot-path audio cues played via paplay. Leave empty to disable a cue.
+# sound_start fires when recording begins ("now listening"); sound_stop fires
+# when recording ends and on empty/silence ("working / done").
+sound_start = ""
+sound_stop  = ""
+
+[cache]
+# WAV recordings kept as an accuracy-debugging corpus (count-capped).
+wav_keep = 30
+# Transcripts kept to back `replay-last` (count-capped, small).
+transcript_keep = 5
+# Freshness window (seconds): a transcript produced within this long after the
+# recording ends is auto-typed; slower than this it's held for `replay-last`.
+# Generous backstop (~15 min), not a routine gate — hands-free is the priority.
+retry_window_seconds = 900

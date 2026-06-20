@@ -7,13 +7,15 @@
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
-/// Top-level configuration (the S1 subset).
+/// Top-level configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub whisper: WhisperConfig,
     pub audio: AudioConfig,
     pub inject: InjectConfig,
+    pub feedback: FeedbackConfig,
+    pub cache: CacheConfig,
 }
 
 /// `[whisper]` — how to reach and pin the transcription server.
@@ -33,11 +35,14 @@ pub struct WhisperConfig {
     pub extra_args: Vec<String>,
 }
 
-/// `[audio]` — capture device selection.
+/// `[audio]` — capture device selection and the runaway-recording cap.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AudioConfig {
     pub device: String,
+    /// Safety cap (~900 s): on expiry the recorder stops + enqueues so a
+    /// forgotten recording can't run away. Also backstops a VAD "never speak".
+    pub max_recording_seconds: u64,
 }
 
 /// `[inject]` — `ydotool` typing behavior.
@@ -45,6 +50,31 @@ pub struct AudioConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct InjectConfig {
     pub key_delay_ms: u32,
+}
+
+/// `[feedback]` — audio cues played on the hot path via `paplay`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct FeedbackConfig {
+    /// "Now listening" cue, played when recording starts. Empty = no cue.
+    pub sound_start: String,
+    /// "Working / done" cue, played when recording stops (and on
+    /// empty/silence). Empty = no cue.
+    pub sound_stop: String,
+}
+
+/// `[cache]` — WAV/transcript retention and the freshness backstop.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CacheConfig {
+    /// How many WAV recordings to keep (the accuracy-debugging corpus).
+    pub wav_keep: usize,
+    /// How many transcripts to keep (backs `replay-last`).
+    pub transcript_keep: usize,
+    /// Freshness window: a transcript produced within this many seconds of the
+    /// recording ending is auto-typed; otherwise held for replay. Generous
+    /// backstop (~15 min), not a routine gate.
+    pub retry_window_seconds: u64,
 }
 
 impl Default for WhisperConfig {
@@ -64,6 +94,7 @@ impl Default for AudioConfig {
     fn default() -> Self {
         Self {
             device: "default".to_owned(),
+            max_recording_seconds: 900,
         }
     }
 }
@@ -71,6 +102,16 @@ impl Default for AudioConfig {
 impl Default for InjectConfig {
     fn default() -> Self {
         Self { key_delay_ms: 12 }
+    }
+}
+
+impl Default for CacheConfig {
+    fn default() -> Self {
+        Self {
+            wav_keep: 30,
+            transcript_keep: 5,
+            retry_window_seconds: 900,
+        }
     }
 }
 
@@ -115,7 +156,13 @@ mod tests {
         assert_eq!(cfg.whisper.host, "127.0.0.1");
         assert_eq!(cfg.whisper.port, 8910);
         assert_eq!(cfg.audio.device, "default");
+        assert_eq!(cfg.audio.max_recording_seconds, 900);
         assert_eq!(cfg.inject.key_delay_ms, 12);
+        assert_eq!(cfg.feedback.sound_start, "");
+        assert_eq!(cfg.feedback.sound_stop, "");
+        assert_eq!(cfg.cache.wav_keep, 30);
+        assert_eq!(cfg.cache.transcript_keep, 5);
+        assert_eq!(cfg.cache.retry_window_seconds, 900);
     }
 
     #[test]
@@ -137,9 +184,19 @@ vulkan_device = "0000:1a:00.0"
 
 [audio]
 device = "alsa_input.pci-0000_03_00"
+max_recording_seconds = 600
 
 [inject]
 key_delay_ms = 20
+
+[feedback]
+sound_start = "/usr/share/ghostty-voice/start.wav"
+sound_stop = "/usr/share/ghostty-voice/stop.wav"
+
+[cache]
+wav_keep = 50
+transcript_keep = 8
+retry_window_seconds = 1200
 "#;
         let cfg = Config::from_toml_str(toml).unwrap();
         assert_eq!(cfg.whisper.host, "0.0.0.0");
@@ -147,7 +204,16 @@ key_delay_ms = 20
         assert_eq!(cfg.whisper.model_path, "/models/x.bin");
         assert_eq!(cfg.whisper.vulkan_device, "0000:1a:00.0");
         assert_eq!(cfg.audio.device, "alsa_input.pci-0000_03_00");
+        assert_eq!(cfg.audio.max_recording_seconds, 600);
         assert_eq!(cfg.inject.key_delay_ms, 20);
+        assert_eq!(
+            cfg.feedback.sound_start,
+            "/usr/share/ghostty-voice/start.wav"
+        );
+        assert_eq!(cfg.feedback.sound_stop, "/usr/share/ghostty-voice/stop.wav");
+        assert_eq!(cfg.cache.wav_keep, 50);
+        assert_eq!(cfg.cache.transcript_keep, 8);
+        assert_eq!(cfg.cache.retry_window_seconds, 1200);
     }
 
     #[test]
