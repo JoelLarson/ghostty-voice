@@ -1,9 +1,10 @@
 ---
 id: TASK-3
 title: 'S3 — Trustworthy delivery: cache, ordered queue, replay-last'
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-06-20 07:42'
+updated_date: '2026-06-20 08:47'
 labels:
   - needs-triage
 dependencies:
