@@ -52,18 +52,21 @@ min_clip_seconds = 2.0
 key_delay_ms = 12
 
 [input]
-# Tactile triggers, read directly from /dev/input via evdev (no GNOME). Set
-# these with `ghostty-voice-ctl bind`, which captures the keys, warns on
-# conflicts, runs a live test, and writes them here.
+# Tactile triggers, read directly from /dev/input via evdev (no GNOME). Edit
+# here and restart the daemon to apply. Note: evdev does NOT grab the device, so
+# the trigger key also does its normal thing (an F-key still sends its escape to
+# the terminal) — pick a spare key you don't otherwise use.
 #   start_combo  - Start key: a quick TAP latches recording; HOLD = push-to-talk
 #                  (records while held, stops on release; record-on-press so the
 #                  first word is never clipped).
 #   stop_combo   - Stop key: a quick TAP stops a latched recording; HOLD starts a
 #                  hands-free VAD recording (auto-stops on silence).
 #   hold_threshold_ms - tap-vs-hold cutoff; a release at/after this is a hold.
-#   device       - which ONE input device to read: "auto" (first keyboard), a
-#                  "/dev/input/..." path, or "name:<substring>" of the device
-#                  name. Only this device is read.
+#   device       - which ONE input device to read. "auto" picks the lowest real
+#                  keyboard (virtual/injector devices are skipped). With more
+#                  than one keyboard, pin yours: "name:<substring>" of the device
+#                  name (see `cat /proc/bus/input/devices`) or a "/dev/input/eventN"
+#                  path. Only this device is read.
 start_combo = "Shift+F10"
 stop_combo = "Shift+F9"
 hold_threshold_ms = 250

@@ -3,7 +3,6 @@
 //! All decision logic lives here so it is testable with real objects (no
 //! mocks); the daemon and CLI binaries are thin IO shells over this crate.
 
-pub mod bind;
 pub mod cache;
 pub mod config;
 pub mod corrections;

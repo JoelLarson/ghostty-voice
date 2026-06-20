@@ -2,8 +2,8 @@
 //!
 //! Manual commands connect to the daemon's Unix socket, write one command word,
 //! print the reply line, and exit. The everyday triggers are tactile (evdev,
-//! read by the daemon — see S8); `bind` is the setup flow that captures the
-//! trigger keys and `doctor` diagnoses the environment.
+//! read by the daemon — see S8; configured in `[input]`); `doctor` diagnoses the
+//! environment.
 
 use std::io::{Read, Write};
 use std::net::Shutdown;
@@ -41,9 +41,6 @@ enum Cmd {
     Reload,
     /// Re-inject the most-recent cached transcript (refocus Ghostty first).
     ReplayLast,
-    /// Capture the tactile trigger keys (Start/Stop), warn on conflicts, run a
-    /// live test, and write them to config. Re-runnable to rebind.
-    Bind,
     /// Diagnose the environment (ydotoold, input group, uinput, trigger device).
     Doctor,
 }
@@ -59,7 +56,7 @@ impl Cmd {
             Cmd::Status => "status",
             Cmd::Reload => "reload",
             Cmd::ReplayLast => "replay-last",
-            Cmd::Bind | Cmd::Doctor => return None,
+            Cmd::Doctor => return None,
         })
     }
 }
@@ -87,7 +84,6 @@ fn send_to(path: &Path, word: &str) -> Result<String> {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Cmd::Bind => bind(),
         Cmd::Doctor => doctor(),
         ref other => {
             let word = other.word().expect("a socket command");
@@ -146,122 +142,13 @@ fn in_group(group: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// The bind/setup flow (S8): capture the Start and Stop trigger keys directly
-/// from the configured evdev device, show exactly what each emits, warn on
-/// conflicts, run a live "press once" test, then write the combos to config.
-fn bind() -> Result<()> {
-    use ghostty_voice_core::config::set_input_combos;
-
-    let cfg = load_config();
-    let selector = cfg.input.device.clone();
-    let (path, mut device) =
-        ghostty_voice_io::input::open_device(&selector).with_context(|| {
-            format!(
-                "cannot open input device {selector:?} — are you in the 'input' group? \
-             (run `ghostty-voice-ctl doctor`)"
-            )
-        })?;
-    println!(
-        "Reading from: {} [{}]\n",
-        ghostty_voice_io::input::device_name(&device),
-        path.display()
-    );
-
-    let start = capture_one(&mut device, "START (tap = latch, hold = push-to-talk)")?;
-    let stop = capture_one(&mut device, "STOP (tap = stop, hold = hands-free VAD)")?;
-
-    println!("\nBinding:");
-    println!("  start_combo = \"{}\"", start.display());
-    println!("  stop_combo  = \"{}\"", stop.display());
-
-    // Persist into the user's config, preserving everything else.
-    let cfg_path = config_path()?;
-    let existing = std::fs::read_to_string(&cfg_path).unwrap_or_default();
-    let updated = set_input_combos(&existing, &start.display(), &stop.display());
-    if let Some(parent) = cfg_path.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-    std::fs::write(&cfg_path, updated)
-        .with_context(|| format!("writing {}", cfg_path.display()))?;
-
-    println!("\nWrote {}.", cfg_path.display());
-    println!("Run `systemctl --user restart ghostty-voiced` to apply (or replug the device).");
-    Ok(())
-}
-
-/// Capture one trigger key, display what it emitted, warn on conflicts, and run
-/// the live press-once test (the ground-truth conflict check).
-fn capture_one(
-    device: &mut ghostty_voice_io::evdev::Device,
-    label: &str,
-) -> Result<ghostty_voice_core::key_combo::KeyCombo> {
-    use ghostty_voice_core::bind::{BindProbes, evaluate, looks_safe};
-    use ghostty_voice_core::key_combo::{KeyCombo, key_name};
-
-    println!("Press the key for {label}:");
-    let captured = ghostty_voice_io::input::capture_combo(device)?;
-    let combo = KeyCombo {
-        modifiers: captured.modifiers,
-        key: captured.code,
-    };
-    let label_name = key_name(captured.code);
-    println!(
-        "  emitted: {} (code {}){}",
-        combo.display(),
-        captured.code,
-        match label_name {
-            Some(_) => "",
-            None => "  [unnamed key — it may be remapped]",
-        }
-    );
-
-    let probes = BindProbes {
-        combo,
-        // GNOME conflict detection is deliberately gone (evdev sits beneath the
-        // compositor); the live press-once test below is the real backstop.
-        gsettings_bound: false,
-        remapped: label_name.is_none(),
-    };
-    let warnings = evaluate(&probes);
-    if looks_safe(&warnings) {
-        println!("  looks clear.");
-    } else {
-        for w in &warnings {
-            println!("  WARNING: {}", w.message);
-        }
-    }
-
-    live_test(device, &combo)?;
-    println!();
-    Ok(combo)
-}
-
-/// Live "press once" test: ask the user to press the just-bound combo again and
-/// confirm the device emits exactly that key (nothing else remapped it). This is
-/// the ground-truth conflict check — there is no global binding registry.
-fn live_test(
-    device: &mut ghostty_voice_io::evdev::Device,
-    combo: &ghostty_voice_core::key_combo::KeyCombo,
-) -> Result<()> {
-    println!("  Live test — press {} once to confirm:", combo.display());
-    let seen = ghostty_voice_io::input::capture_combo(device)?;
-    if seen.code == combo.key {
-        println!("  confirmed: it emits {} as expected.", combo.display());
-    } else {
-        println!(
-            "  MISMATCH: that emitted code {} — something remapped the key. Re-run bind.",
-            seen.code
-        );
-    }
-    Ok(())
-}
-
 fn config_path() -> Result<PathBuf> {
     let home = std::env::var("HOME").context("HOME is not set")?;
     Ok(PathBuf::from(home).join(".config/ghostty-voice/config.toml"))
 }
 
-/// Load config (defaults if missing/invalid) — used by `bind` and `doctor`.
+/// Load config (defaults if missing/invalid) — used by `doctor` to find the
+/// configured trigger device.
 fn load_config() -> ghostty_voice_core::config::Config {
     config_path()
         .ok()
@@ -282,8 +169,7 @@ mod tests {
     }
 
     #[test]
-    fn bind_and_doctor_are_local_only_subcommands() {
-        assert_eq!(Cmd::Bind.word(), None);
+    fn doctor_is_a_local_only_subcommand() {
         assert_eq!(Cmd::Doctor.word(), None);
     }
 

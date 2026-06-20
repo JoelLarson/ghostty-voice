@@ -20,36 +20,58 @@ use std::time::{Duration, UNIX_EPOCH};
 use anyhow::{Context, Result, bail};
 use evdev::{Device, EventType, InputEvent, Key};
 use ghostty_voice_core::input::RawKeyEvent;
-use ghostty_voice_core::key_combo::{Modifiers, codes};
 
 /// Open the one input device named by `selector`:
 ///
-/// - `auto` — the first device that looks like a real keyboard.
+/// - `auto` — the lowest-numbered **real hardware** keyboard (virtual/injector
+///   devices like `ydotoold`'s are skipped — otherwise the daemon would read its
+///   own injected keystrokes instead of yours).
 /// - `/dev/input/...` — that exact device path.
 /// - `name:<substr>` — the first device whose name contains `<substr>`
 ///   (case-insensitive).
+///
+/// With more than one physical keyboard, prefer pinning `name:<substr>` (e.g.
+/// `name:daskeyboard`) — `auto` is a best-effort default, not a guess at which
+/// keyboard you actually type on.
 pub fn open_device(selector: &str) -> Result<(PathBuf, Device)> {
     let sel = selector.trim();
     if let Some(name) = sel.strip_prefix("name:") {
         let needle = name.trim().to_ascii_lowercase();
-        for (path, device) in evdev::enumerate() {
-            if device
-                .name()
-                .map(|n| n.to_ascii_lowercase().contains(&needle))
-                .unwrap_or(false)
-            {
-                return Ok((path, device));
-            }
+        // A name substring can match several collections of one device (e.g.
+        // "daskeyboard" + "daskeyboard System Control"); prefer the one that is
+        // an actual keyboard (emits the alpha/F-keys), lowest event number.
+        let mut matches: Vec<(PathBuf, Device)> = evdev::enumerate()
+            .filter(|(_, d)| {
+                d.name()
+                    .map(|n| n.to_ascii_lowercase().contains(&needle))
+                    .unwrap_or(false)
+            })
+            .collect();
+        matches.sort_by_key(|(p, _)| event_number(p));
+        if let Some(kbd) = matches
+            .iter()
+            .position(|(_, d)| is_keyboard(d) && !is_virtual(d))
+        {
+            return Ok(matches.swap_remove(kbd));
+        }
+        // No keyboard-shaped match — fall back to the first name match so an
+        // explicit non-keyboard selection still works.
+        if let Some(pick) = matches.into_iter().next() {
+            return Ok(pick);
         }
         bail!("no input device whose name contains {name:?}");
     }
     if sel == "auto" {
-        for (path, device) in evdev::enumerate() {
-            if is_keyboard(&device) {
-                return Ok((path, device));
-            }
+        // Collect real keyboards (skip our own injector and other virtual
+        // devices), then pick the lowest event number for a stable choice.
+        let mut candidates: Vec<(PathBuf, Device)> = evdev::enumerate()
+            .filter(|(_, d)| is_keyboard(d) && !is_virtual(d))
+            .collect();
+        candidates.sort_by_key(|(p, _)| event_number(p));
+        if let Some(pick) = candidates.into_iter().next() {
+            return Ok(pick);
         }
-        bail!("no keyboard-like input device found under /dev/input");
+        bail!("no real keyboard found under /dev/input (only virtual/injector devices?)");
     }
     // Otherwise treat it as a device path.
     let device = Device::open(sel).with_context(|| format!("opening input device {sel}"))?;
@@ -63,6 +85,29 @@ fn is_keyboard(device: &Device) -> bool {
         .supported_keys()
         .map(|keys| keys.contains(Key::KEY_A) && keys.contains(Key::KEY_ENTER))
         .unwrap_or(false)
+}
+
+/// A virtual/injector keyboard (e.g. `ydotoold`'s uinput device) — never a valid
+/// trigger source: reading it would feed the daemon its own injected keystrokes,
+/// not the user's. Matched by name since uinput devices carry a descriptive one.
+fn is_virtual(device: &Device) -> bool {
+    device
+        .name()
+        .map(|n| {
+            let n = n.to_ascii_lowercase();
+            n.contains("ydotool") || n.contains("virtual") || n.contains("uinput")
+        })
+        .unwrap_or(false)
+}
+
+/// The trailing `eventN` number of a `/dev/input/eventN` path (for a stable,
+/// numeric `auto` ordering); `u32::MAX` if it can't be parsed.
+fn event_number(path: &std::path::Path) -> u32 {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .and_then(|n| n.strip_prefix("event"))
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(u32::MAX)
 }
 
 /// The device's human name (for logging which one device we opened).
@@ -111,80 +156,6 @@ pub fn read_keys(
             }
         }
     }
-}
-
-/// A key captured by the bind flow: its evdev code and the modifiers held when
-/// it went down.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Captured {
-    pub code: u16,
-    pub modifiers: Modifiers,
-}
-
-/// Block until the next non-modifier key goes down, returning its code and the
-/// modifier state at that instant. Used by `ghostty-voice-ctl bind` to capture
-/// exactly what a key emits (so a remapped key is caught).
-pub fn capture_combo(device: &mut Device) -> Result<Captured> {
-    let mut mods = ModState::default();
-    let mut captured: Option<Captured> = None;
-    read_keys(device, |raw| {
-        if mods.track(raw) {
-            return ControlFlow::Continue(());
-        }
-        if raw.pressed {
-            captured = Some(Captured {
-                code: raw.code,
-                modifiers: mods.modifiers(),
-            });
-            return ControlFlow::Break(());
-        }
-        ControlFlow::Continue(())
-    })?;
-    captured.context("device closed before a key was captured")
-}
-
-/// Minimal modifier tracker for the one-shot bind capture (the daemon uses the
-/// core `KeyTracker`, which tracks its own).
-#[derive(Default)]
-struct ModState {
-    left_shift: bool,
-    right_shift: bool,
-    left_ctrl: bool,
-    right_ctrl: bool,
-    left_alt: bool,
-    right_alt: bool,
-}
-
-impl ModState {
-    /// Update state if `raw` is a modifier; return whether it was one.
-    fn track(&mut self, raw: RawKeyEvent) -> bool {
-        let slot = match raw.code {
-            codes::KEY_LEFTSHIFT => &mut self.left_shift,
-            codes::KEY_RIGHTSHIFT => &mut self.right_shift,
-            codes::KEY_LEFTCTRL => &mut self.left_ctrl,
-            codes::KEY_RIGHTCTRL => &mut self.right_ctrl,
-            codes::KEY_LEFTALT => &mut self.left_alt,
-            codes::KEY_RIGHTALT => &mut self.right_alt,
-            _ => return false,
-        };
-        *slot = raw.pressed;
-        true
-    }
-
-    fn modifiers(&self) -> Modifiers {
-        Modifiers {
-            shift: self.left_shift || self.right_shift,
-            ctrl: self.left_ctrl || self.right_ctrl,
-            alt: self.left_alt || self.right_alt,
-        }
-    }
-}
-
-/// Resolve the device path the daemon will read, without holding it open — for
-/// the `doctor`/bind flows to report what `auto` selects.
-pub fn resolve_device_path(selector: &str) -> Result<PathBuf> {
-    let (path, _device) = open_device(selector)?;
-    Ok(path)
 }
 
 /// Does `selector` point at a readable device? (A cheap boundary probe for

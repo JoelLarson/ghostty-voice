@@ -63,7 +63,7 @@ pub fn evaluate(probes: &Probes) -> Vec<Check> {
             "trigger device",
             probes.trigger_device_readable,
             "the evdev trigger device can't be opened — check [input].device and that you're \
-             in the 'input' group; run `ghostty-voice-ctl bind` to (re)select it",
+             in the 'input' group (list devices with `cat /proc/bus/input/devices`)",
         ),
     ]
 }

@@ -17,9 +17,9 @@ Three processes; the daemon owns all state:
   supervised as a child of the daemon.
 - **`ghostty-voiced`** — the daemon (one systemd **user** service): supervises whisper-server,
   listens on a Unix socket, records, transcribes, injects, manages caches.
-- **`ghostty-voice-ctl`** — thin client for manual commands (`status`, `replay-last`), plus
-  the `bind` setup flow and `doctor`. (The everyday triggers are tactile — the daemon reads
-  them directly via evdev, no per-keypress process spawn.)
+- **`ghostty-voice-ctl`** — thin client for manual commands (`status`, `replay-last`) and
+  `doctor`. (The everyday triggers are tactile — the daemon reads them directly via evdev, no
+  per-keypress process spawn.)
 
 ## Build
 
@@ -53,16 +53,21 @@ makepkg -si                    # builds the Rust workspace + a vendored whisper.
    ```sh
    ghostty-voice-ctl doctor
    ```
-5. **Triggers** — bind the two tactile keys (read directly from `/dev/input` via evdev, so
-   they work on any compositor — no GNOME):
-   ```sh
-   ghostty-voice-ctl bind
+5. **Triggers** — the daemon reads two keys directly from `/dev/input` via evdev (any
+   compositor, no GNOME). Defaults are **Shift+F10** (Start) and **Shift+F9** (Stop); change
+   them in the `[input]` section of your config:
+   ```toml
+   [input]
+   start_combo = "Shift+F10"
+   stop_combo  = "Shift+F9"
+   hold_threshold_ms = 250
+   # Pin your keyboard if you have more than one (find names with `cat /proc/bus/input/devices`):
+   device = "auto"          # or "name:daskeyboard", or a "/dev/input/eventN" path
    ```
-   It captures the Start and Stop keys, shows exactly what each emits, warns on conflicts, runs
-   a live "press once" test, and writes them to config. Defaults are **Shift+F10** (Start) and
-   **Shift+F9** (Stop). Re-run anytime to rebind; restart the daemon (or replug the device) to
-   apply. Because evdev does not grab the device, pick a **spare** key (an F-key works well) —
-   a normal typing key would both trigger and type.
+   Restart the daemon after editing. Because evdev does not grab the device, the trigger key
+   **also** does its normal thing (e.g. an F-key still sends its escape to the terminal) — pick
+   a spare key you don't otherwise use. With more than one keyboard, set `device = "name:..."`
+   rather than `auto`, or the daemon may read the wrong one.
 6. **Enable the daemon**:
    ```sh
    systemctl --user enable --now ghostty-voiced
@@ -90,7 +95,7 @@ hot-applies non-model fields (`ghostty-voice-ctl reload`). The slice each key be
 - `[inject]` — `key_delay_ms` (S2).
 - `[input]` — tactile triggers (S8): `start_combo` / `stop_combo` (e.g. `Shift+F10`),
   `hold_threshold_ms` (tap-vs-hold cutoff), and `device` (`auto`, a `/dev/input/...` path, or
-  `name:<substr>`). Set these with `ghostty-voice-ctl bind`.
+  `name:<substr>`). Edit directly; restart the daemon to apply.
 - `[feedback]` — `sound_start` / `sound_stop` (cues, S7): a freedesktop theme event id (default)
   or a sound-file path — both played via `paplay`; empty disables.
 - `[cache]` — `wav_keep`, `transcript_keep`, `retry_window_seconds` (delivery + freshness, S3).
@@ -109,8 +114,8 @@ push-to-talk never clips the first word.
 - **Stop hold**: start a **hands-free VAD** recording — `sox` auto-stops on the first trailing
   silence, then transcribes → types.
 
-The tap-vs-hold cutoff is `[input].hold_threshold_ms` (~250 ms). Rebind the keys with
-`ghostty-voice-ctl bind`.
+The tap-vs-hold cutoff is `[input].hold_threshold_ms` (~250 ms). Change the keys or device in
+the `[input]` section of your config and restart the daemon.
 
 - **Continuous mode** (the north-star long-form mode) and `cancel` remain available as
   `ghostty-voice-ctl continuous` / `ghostty-voice-ctl cancel` (no tactile gesture this round).
