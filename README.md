@@ -66,7 +66,10 @@ makepkg -si                    # builds the Rust workspace + a vendored whisper.
 ## Troubleshooting
 
 - **Nothing typed / wrong window** — `ydotool` injects into whatever has focus; keep Ghostty
-  focused. A misfire is recoverable with `replay-last` (refocus, then replay).
+  focused. A misfire is recoverable: refocus Ghostty, then `ghostty-voice-ctl replay-last`
+  re-injects the most-recent cached transcript. A transcript is cached to
+  `$XDG_CACHE_HOME/ghostty-voice/transcripts/` *before* typing, so it is never lost even if
+  typing fails. WAV recordings are kept under `recordings/` (count-capped) as a debugging corpus.
 - **`ydotoold` errors** — run `ghostty-voice-ctl doctor`; ensure `ydotoold` is running, you're
   in the `input` group, and `/dev/uinput` exists.
 - **Wrong GPU / slow** — check the daemon log (`journalctl --user -u ghostty-voiced`) for the
