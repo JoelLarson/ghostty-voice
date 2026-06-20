@@ -1,8 +1,9 @@
-//! Environment diagnostics (S7).
+//! Environment diagnostics (S7, extended in S8).
 //!
 //! The `doctor` command probes the environment (ydotoold socket, `input` group,
-//! `/dev/uinput`) and reports actionable problems. The probing is the boundary;
-//! turning probe results into named checks is pure and tested here.
+//! `/dev/uinput`, and the evdev trigger device) and reports actionable problems.
+//! The probing is the boundary; turning probe results into named checks is pure
+//! and tested here.
 
 /// The outcome of one check.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,6 +25,9 @@ pub struct Probes {
     pub ydotool_socket_exists: bool,
     pub in_input_group: bool,
     pub uinput_present: bool,
+    /// The configured evdev trigger device could be opened (S8): without it the
+    /// tactile Start/Stop keys can't be read.
+    pub trigger_device_readable: bool,
 }
 
 /// Turn probe results into named checks with actionable problem messages.
@@ -55,6 +59,12 @@ pub fn evaluate(probes: &Probes) -> Vec<Check> {
             probes.uinput_present,
             "/dev/uinput is missing — load the uinput kernel module",
         ),
+        check(
+            "trigger device",
+            probes.trigger_device_readable,
+            "the evdev trigger device can't be opened — check [input].device and that you're \
+             in the 'input' group; run `ghostty-voice-ctl bind` to (re)select it",
+        ),
     ]
 }
 
@@ -71,13 +81,26 @@ mod tests {
         ydotool_socket_exists: true,
         in_input_group: true,
         uinput_present: true,
+        trigger_device_readable: true,
     };
 
     #[test]
     fn healthy_environment_has_no_problems() {
         let checks = evaluate(&HEALTHY);
         assert!(all_ok(&checks));
-        assert_eq!(checks.len(), 3);
+        assert_eq!(checks.len(), 4);
+    }
+
+    #[test]
+    fn missing_trigger_device_is_flagged() {
+        let probes = Probes {
+            trigger_device_readable: false,
+            ..HEALTHY
+        };
+        let checks = evaluate(&probes);
+        assert!(!all_ok(&checks));
+        let dev = checks.iter().find(|c| c.name == "trigger device").unwrap();
+        assert!(matches!(dev.status, CheckStatus::Problem(_)));
     }
 
     #[test]

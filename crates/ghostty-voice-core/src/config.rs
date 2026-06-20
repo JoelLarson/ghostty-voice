@@ -226,6 +226,80 @@ impl Config {
     }
 }
 
+/// Upsert the `[input]` `start_combo`/`stop_combo` into an existing config
+/// string, preserving every other line (the `ctl bind` writer, S8).
+///
+/// If an `[input]` section exists, the two keys are replaced in place (or
+/// appended to that section if absent); otherwise a fresh `[input]` section is
+/// appended. Pure (string in, string out) so it is tested without touching disk;
+/// inline comments on the two replaced lines are not preserved (acceptable — the
+/// rest of the file, comments and all, is).
+pub fn set_input_combos(existing: &str, start_combo: &str, stop_combo: &str) -> String {
+    let start_line = format!("start_combo = \"{start_combo}\"");
+    let stop_line = format!("stop_combo = \"{stop_combo}\"");
+
+    let mut out: Vec<String> = Vec::new();
+    let mut in_input = false;
+    let mut input_seen = false;
+    let mut wrote_start = false;
+    let mut wrote_stop = false;
+
+    let flush_missing = |out: &mut Vec<String>, wrote_start: &mut bool, wrote_stop: &mut bool| {
+        if !*wrote_start {
+            out.push(start_line.clone());
+            *wrote_start = true;
+        }
+        if !*wrote_stop {
+            out.push(stop_line.clone());
+            *wrote_stop = true;
+        }
+    };
+
+    for line in existing.lines() {
+        let trimmed = line.trim();
+        let is_header = trimmed.starts_with('[') && trimmed.ends_with(']');
+        if is_header {
+            if in_input {
+                flush_missing(&mut out, &mut wrote_start, &mut wrote_stop);
+            }
+            in_input = trimmed == "[input]";
+            input_seen |= in_input;
+            out.push(line.to_owned());
+            continue;
+        }
+        if in_input {
+            let key = trimmed.split('=').next().unwrap_or("").trim();
+            if key == "start_combo" {
+                out.push(start_line.clone());
+                wrote_start = true;
+                continue;
+            }
+            if key == "stop_combo" {
+                out.push(stop_line.clone());
+                wrote_stop = true;
+                continue;
+            }
+        }
+        out.push(line.to_owned());
+    }
+
+    if in_input {
+        flush_missing(&mut out, &mut wrote_start, &mut wrote_stop);
+    }
+    if !input_seen {
+        if out.last().is_some_and(|l| !l.trim().is_empty()) {
+            out.push(String::new());
+        }
+        out.push("[input]".to_owned());
+        out.push(start_line);
+        out.push(stop_line);
+    }
+
+    let mut joined = out.join("\n");
+    joined.push('\n');
+    joined
+}
+
 /// Expand a leading `~` or `~/...` to `home`. Paths without a leading tilde
 /// (and `~user` forms, which name a different home) are returned unchanged.
 /// `home` is injected so this stays pure and testable.
@@ -448,6 +522,46 @@ retry_window_seconds = 1200
             expand_tilde("models/x.bin", Path::new("/home/joel")),
             PathBuf::from("models/x.bin"),
         );
+    }
+
+    #[test]
+    fn set_input_combos_replaces_keys_in_an_existing_section() {
+        let existing = "[whisper]\nport = 9000\n\n[input]\nstart_combo = \"Shift+F10\"\nstop_combo = \"Shift+F9\"\ndevice = \"auto\"\n";
+        let out = set_input_combos(existing, "Ctrl+Alt+R", "Ctrl+Alt+S");
+        // The two combos are replaced; device and other sections survive.
+        let cfg = Config::from_toml_str(&out).unwrap();
+        assert_eq!(cfg.input.start_combo, "Ctrl+Alt+R");
+        assert_eq!(cfg.input.stop_combo, "Ctrl+Alt+S");
+        assert_eq!(cfg.input.device, "auto");
+        assert_eq!(cfg.whisper.port, 9000);
+    }
+
+    #[test]
+    fn set_input_combos_appends_a_section_when_absent() {
+        let existing = "[whisper]\nport = 9000\n";
+        let out = set_input_combos(existing, "Shift+F10", "Shift+F9");
+        let cfg = Config::from_toml_str(&out).unwrap();
+        assert_eq!(cfg.input.start_combo, "Shift+F10");
+        assert_eq!(cfg.input.stop_combo, "Shift+F9");
+        assert_eq!(cfg.whisper.port, 9000); // untouched
+    }
+
+    #[test]
+    fn set_input_combos_adds_missing_key_to_partial_section() {
+        // An [input] with only a device line gains both combos.
+        let existing = "[input]\ndevice = \"name:Keychron\"\n";
+        let out = set_input_combos(existing, "Shift+F10", "Shift+F9");
+        let cfg = Config::from_toml_str(&out).unwrap();
+        assert_eq!(cfg.input.start_combo, "Shift+F10");
+        assert_eq!(cfg.input.stop_combo, "Shift+F9");
+        assert_eq!(cfg.input.device, "name:Keychron");
+    }
+
+    #[test]
+    fn set_input_combos_from_empty_yields_a_parseable_config() {
+        let out = set_input_combos("", "Shift+F10", "Shift+F9");
+        let cfg = Config::from_toml_str(&out).unwrap();
+        assert_eq!(cfg.input.start_combo, "Shift+F10");
     }
 
     #[test]

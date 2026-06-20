@@ -10,4 +10,8 @@ pub mod cue;
 pub mod download;
 pub mod inject;
 pub mod input;
+
+/// Re-exported so callers (e.g. `ghostty-voice-ctl bind`) can name the device
+/// type without taking a direct `evdev` dependency.
+pub use evdev;
 pub mod transcribe;

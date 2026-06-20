@@ -1,7 +1,9 @@
 //! ghostty-voice-ctl — thin control client.
 //!
-//! Spawned by each GNOME hotkey: connect to the daemon's Unix socket, write one
-//! command word, print the reply line, exit.
+//! Manual commands connect to the daemon's Unix socket, write one command word,
+//! print the reply line, and exit. The everyday triggers are tactile (evdev,
+//! read by the daemon — see S8); `bind` is the setup flow that captures the
+//! trigger keys and `doctor` diagnoses the environment.
 
 use std::io::{Read, Write};
 use std::net::Shutdown;
@@ -39,10 +41,10 @@ enum Cmd {
     Reload,
     /// Re-inject the most-recent cached transcript (refocus Ghostty first).
     ReplayLast,
-    /// Install GNOME custom keybindings (Super+D toggle, Super+Shift+D vad,
-    /// Super+Ctrl+D continuous, Super+Alt+D cancel).
-    InstallHotkeys,
-    /// Diagnose the injection environment (ydotoold, input group, uinput).
+    /// Capture the tactile trigger keys (Start/Stop), warn on conflicts, run a
+    /// live test, and write them to config. Re-runnable to rebind.
+    Bind,
+    /// Diagnose the environment (ydotoold, input group, uinput, trigger device).
     Doctor,
 }
 
@@ -57,7 +59,7 @@ impl Cmd {
             Cmd::Status => "status",
             Cmd::Reload => "reload",
             Cmd::ReplayLast => "replay-last",
-            Cmd::InstallHotkeys | Cmd::Doctor => return None,
+            Cmd::Bind | Cmd::Doctor => return None,
         })
     }
 }
@@ -85,7 +87,7 @@ fn send_to(path: &Path, word: &str) -> Result<String> {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Cmd::InstallHotkeys => install_hotkeys(),
+        Cmd::Bind => bind(),
         Cmd::Doctor => doctor(),
         ref other => {
             let word = other.word().expect("a socket command");
@@ -105,10 +107,12 @@ fn doctor() -> Result<()> {
             .unwrap_or_else(|_| "/tmp/.ydotool_socket".to_owned())
     });
 
+    let device = load_config().input.device;
     let probes = ghostty_voice_core::doctor::Probes {
         ydotool_socket_exists: Path::new(&ydotool_socket).exists(),
         in_input_group: in_group("input"),
         uinput_present: Path::new("/dev/uinput").exists(),
+        trigger_device_readable: ghostty_voice_io::input::device_available(&device),
     };
 
     let mut all_ok = true;
@@ -142,77 +146,127 @@ fn in_group(group: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Install the GNOME custom keybindings via `gsettings`, merging with any
-/// already present.
-fn install_hotkeys() -> Result<()> {
-    use ghostty_voice_core::hotkeys::{
-        Hotkey, format_path_list, keybinding_path, merge_paths, parse_path_list,
-    };
+/// The bind/setup flow (S8): capture the Start and Stop trigger keys directly
+/// from the configured evdev device, show exactly what each emits, warn on
+/// conflicts, run a live "press once" test, then write the combos to config.
+fn bind() -> Result<()> {
+    use ghostty_voice_core::config::set_input_combos;
 
-    const SCHEMA: &str = "org.gnome.settings-daemon.plugins.media-keys";
-    let exe = "ghostty-voice-ctl";
-    let hotkeys = [
-        Hotkey {
-            slug: "ghostty-voice-toggle",
-            name: "ghostty-voice toggle",
-            command: format!("{exe} toggle"),
-            binding: "<Super>d",
-        },
-        Hotkey {
-            slug: "ghostty-voice-vad",
-            name: "ghostty-voice vad",
-            command: format!("{exe} vad"),
-            binding: "<Super><Shift>d",
-        },
-        Hotkey {
-            slug: "ghostty-voice-continuous",
-            name: "ghostty-voice continuous",
-            command: format!("{exe} continuous"),
-            binding: "<Super><Control>d",
-        },
-        Hotkey {
-            slug: "ghostty-voice-cancel",
-            name: "ghostty-voice cancel",
-            command: format!("{exe} cancel"),
-            binding: "<Super><Alt>d",
-        },
-    ];
-
-    let existing = parse_path_list(&run_gsettings(&["get", SCHEMA, "custom-keybindings"])?);
-    let ours: Vec<String> = hotkeys.iter().map(|h| keybinding_path(h.slug)).collect();
-    let merged = merge_paths(&existing, &ours);
-    run_gsettings(&[
-        "set",
-        SCHEMA,
-        "custom-keybindings",
-        &format_path_list(&merged),
-    ])?;
-
-    for h in &hotkeys {
-        let target = format!("{SCHEMA}.custom-keybinding:{}", keybinding_path(h.slug));
-        run_gsettings(&["set", &target, "name", h.name])?;
-        run_gsettings(&["set", &target, "command", &h.command])?;
-        run_gsettings(&["set", &target, "binding", h.binding])?;
-    }
-
+    let cfg = load_config();
+    let selector = cfg.input.device.clone();
+    let (path, mut device) = ghostty_voice_io::input::open_device(&selector).with_context(|| {
+        format!(
+            "cannot open input device {selector:?} — are you in the 'input' group? \
+             (run `ghostty-voice-ctl doctor`)"
+        )
+    })?;
     println!(
-        "Installed hotkeys: Super+D = toggle, Super+Shift+D = vad, Super+Ctrl+D = continuous, Super+Alt+D = cancel."
+        "Reading from: {} [{}]\n",
+        ghostty_voice_io::input::device_name(&device),
+        path.display()
     );
+
+    let start = capture_one(&mut device, "START (tap = latch, hold = push-to-talk)")?;
+    let stop = capture_one(&mut device, "STOP (tap = stop, hold = hands-free VAD)")?;
+
+    println!("\nBinding:");
+    println!("  start_combo = \"{}\"", start.display());
+    println!("  stop_combo  = \"{}\"", stop.display());
+
+    // Persist into the user's config, preserving everything else.
+    let cfg_path = config_path()?;
+    let existing = std::fs::read_to_string(&cfg_path).unwrap_or_default();
+    let updated = set_input_combos(&existing, &start.display(), &stop.display());
+    if let Some(parent) = cfg_path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    std::fs::write(&cfg_path, updated)
+        .with_context(|| format!("writing {}", cfg_path.display()))?;
+
+    println!("\nWrote {}.", cfg_path.display());
+    println!("Run `systemctl --user restart ghostty-voiced` to apply (or replug the device).");
     Ok(())
 }
 
-fn run_gsettings(args: &[&str]) -> Result<String> {
-    let output = std::process::Command::new("gsettings")
-        .args(args)
-        .output()
-        .context("failed to run gsettings (a GNOME session is required)")?;
-    if !output.status.success() {
-        anyhow::bail!(
-            "gsettings {args:?} failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
+/// Capture one trigger key, display what it emitted, warn on conflicts, and run
+/// the live press-once test (the ground-truth conflict check).
+fn capture_one(
+    device: &mut ghostty_voice_io::evdev::Device,
+    label: &str,
+) -> Result<ghostty_voice_core::key_combo::KeyCombo> {
+    use ghostty_voice_core::bind::{BindProbes, evaluate, looks_safe};
+    use ghostty_voice_core::key_combo::{KeyCombo, key_name};
+
+    println!("Press the key for {label}:");
+    let captured = ghostty_voice_io::input::capture_combo(device)?;
+    let combo = KeyCombo {
+        modifiers: captured.modifiers,
+        key: captured.code,
+    };
+    let label_name = key_name(captured.code);
+    println!(
+        "  emitted: {} (code {}){}",
+        combo.display(),
+        captured.code,
+        match label_name {
+            Some(_) => "",
+            None => "  [unnamed key — it may be remapped]",
+        }
+    );
+
+    let probes = BindProbes {
+        combo,
+        // GNOME conflict detection is deliberately gone (evdev sits beneath the
+        // compositor); the live press-once test below is the real backstop.
+        gsettings_bound: false,
+        remapped: label_name.is_none(),
+    };
+    let warnings = evaluate(&probes);
+    if looks_safe(&warnings) {
+        println!("  looks clear.");
+    } else {
+        for w in &warnings {
+            println!("  WARNING: {}", w.message);
+        }
+    }
+
+    live_test(device, &combo)?;
+    println!();
+    Ok(combo)
+}
+
+/// Live "press once" test: ask the user to press the just-bound combo again and
+/// confirm the device emits exactly that key (nothing else remapped it). This is
+/// the ground-truth conflict check — there is no global binding registry.
+fn live_test(
+    device: &mut ghostty_voice_io::evdev::Device,
+    combo: &ghostty_voice_core::key_combo::KeyCombo,
+) -> Result<()> {
+    println!("  Live test — press {} once to confirm:", combo.display());
+    let seen = ghostty_voice_io::input::capture_combo(device)?;
+    if seen.code == combo.key {
+        println!("  confirmed: it emits {} as expected.", combo.display());
+    } else {
+        println!(
+            "  MISMATCH: that emitted code {} — something remapped the key. Re-run bind.",
+            seen.code
         );
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    Ok(())
+}
+
+fn config_path() -> Result<PathBuf> {
+    let home = std::env::var("HOME").context("HOME is not set")?;
+    Ok(PathBuf::from(home).join(".config/ghostty-voice/config.toml"))
+}
+
+/// Load config (defaults if missing/invalid) — used by `bind` and `doctor`.
+fn load_config() -> ghostty_voice_core::config::Config {
+    config_path()
+        .ok()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| ghostty_voice_core::config::Config::from_toml_str(&s).ok())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -224,6 +278,12 @@ mod tests {
     #[test]
     fn vad_maps_to_the_vad_wire_word() {
         assert_eq!(Cmd::Vad.word(), Some("vad"));
+    }
+
+    #[test]
+    fn bind_and_doctor_are_local_only_subcommands() {
+        assert_eq!(Cmd::Bind.word(), None);
+        assert_eq!(Cmd::Doctor.word(), None);
     }
 
     #[test]
