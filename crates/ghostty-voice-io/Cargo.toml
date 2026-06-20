@@ -7,6 +7,9 @@ publish.workspace = true
 [dependencies]
 ghostty-voice-core = { path = "../ghostty-voice-core" }
 anyhow = "1.0.102"
+# evdev reads /dev/input directly (compositor-agnostic triggers). The user is
+# already in the `input` group, so this is a crate, not a new system package.
+evdev = "0.12.2"
 chrono = { version = "0.4.40", default-features = false, features = ["clock"] }
 nix = { version = "0.31.3", features = ["signal"] }
 # native-tls links the system OpenSSL (a base library on Arch) for the HTTPS
