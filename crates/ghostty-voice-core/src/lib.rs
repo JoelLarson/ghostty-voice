@@ -14,6 +14,7 @@ pub mod machine;
 pub mod prompt;
 pub mod protocol;
 pub mod queue;
+pub mod session;
 pub mod supervisor;
 pub mod transcript;
 pub mod vad;
