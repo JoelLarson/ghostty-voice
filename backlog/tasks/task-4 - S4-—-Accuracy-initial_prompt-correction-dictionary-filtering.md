@@ -1,10 +1,10 @@
 ---
 id: TASK-4
 title: 'S4 — Accuracy: initial_prompt, correction dictionary, filtering'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-06-20 07:42'
-updated_date: '2026-06-20 10:05'
+updated_date: '2026-06-20 10:12'
 labels:
   - needs-triage
 dependencies:
@@ -65,11 +65,11 @@ Code-symbol substitution / camelCase / shell-detection (removed by design); VAD 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 initial_prompt vocab biasing wired, BOUNDED to the ~224-token cap with a warning on truncation
-- [ ] #2 Correction dictionary: case-insensitive deterministic find/replace with defined ordering/word-boundary semantics
-- [ ] #3 beam-8 and temperature 0 applied; [BLANK_AUDIO]/known-hallucination/sub-0.3s discarded and never typed
-- [ ] #4 reload re-reads vocab+corrections+key-delay without a model reload
-- [ ] #5 Correction engine, initial_prompt builder (cap+truncation), and the filter predicate are unit-tested with real objects
+- [x] #1 initial_prompt vocab biasing wired, BOUNDED to the ~224-token cap with a warning on truncation
+- [x] #2 Correction dictionary: case-insensitive deterministic find/replace with defined ordering/word-boundary semantics
+- [x] #3 beam-8 and temperature 0 applied; [BLANK_AUDIO]/known-hallucination/sub-0.3s discarded and never typed
+- [x] #4 reload re-reads vocab+corrections+key-delay without a model reload
+- [x] #5 Correction engine, initial_prompt builder (cap+truncation), and the filter predicate are unit-tested with real objects
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -77,3 +77,21 @@ Code-symbol substitution / camelCase / shell-detection (removed by design); VAD 
 <!-- SECTION:PLAN:BEGIN -->
 Core-first TDD: correction-dictionary engine, initial_prompt builder (token-cap bound + warn), hallucination/empty/min-duration filter. Wire beam/temp/initial_prompt into the transcription transport. Integration: sample WAVs from the cache corpus -> corrected jargon; silence -> nothing typed. No code-symbol substitution.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Code-complete (TASK-4 / S4 accuracy). All quality gates green: cargo test (workspace), cargo clippy --all-targets, cargo fmt --check.
+
+Implemented (Chicago TDD, atomic commits 725390b, 29cd7bd, 477a822, 7eb10d2):
+- Config: [whisper] beam_size(8)/temperature(0.0)/prompt_prefix/vocab, [audio] min_duration_seconds(0.3), [corrections] table — defaults + parse tests; shipped config.toml.example updated and guarded by a parse test.
+- core::corrections::ordered_corrections — deterministic longest-key-first apply order (phrases beat substrings).
+- core::filter::pcm_duration + io::audio::wav_duration — derive recording length from the RIFF data chunk (16kHz/mono/s16), no WAV decoder.
+- io::transcribe: post_inference now sends beam_size/temperature/initial_prompt as multipart fields; InferenceParams::from_whisper_config builds the initial_prompt via the bounded ~224-token builder and surfaces prompt_truncated; daemon warns on overflow. Fake-server integration tests assert the params are sent.
+- core::pipeline::finalize_transcript — the single pure post-transcription decision (discard empty/hallucination/sub-min-duration -> type nothing; else apply corrections). Wired into the daemon transcribe path (sub-min-duration short-circuits before hitting whisper-server).
+- reload: the existing ReloadConfig path reparses the whole config, so vocab + corrections + key_delay re-apply live with NO model reload.
+
+Tests: unit (corrections engine/ordering, prompt builder cap+truncation, filter predicate, pcm_duration, config) + integration (transcribe params vs fake server; tests/accuracy_pipeline.rs drives real sample WAVs -> jargon corrected, [BLANK_AUDIO] types nothing, sub-0.3s types nothing). 130+ tests pass.
+
+Pending on-hardware (per environment limit — no GPU/mic/whisper-server/GNOME): real warm large-v3 transcription accuracy vs. the live whisper-server's exact /inference param names (beam_size/temperature/initial_prompt are sent per whisper.cpp's HTTP server convention — verify upstream accepts them), and end-to-end jargon accuracy against the live S3 WAV cache corpus.
+<!-- SECTION:NOTES:END -->
