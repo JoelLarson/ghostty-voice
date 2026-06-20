@@ -1,9 +1,10 @@
 ---
 id: TASK-1
 title: 'S1 — Walking skeleton: speak → text typed into Ghostty'
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-06-20 07:26'
+updated_date: '2026-06-20 07:51'
 labels:
   - needs-triage
 dependencies: []
