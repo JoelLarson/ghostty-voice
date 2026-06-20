@@ -14,6 +14,8 @@ pub enum Action {
     StopAndTranscribe,
     DiscardRecording,
     ReloadConfig,
+    /// Re-inject the most-recent cached transcript (recovery-only, S3).
+    ReplayLast,
 }
 
 /// The result of applying a command: where to go, what to do, what to reply.
@@ -56,6 +58,10 @@ pub fn apply(state: State, command: Command) -> Transition {
 
         (s, Command::Status) => go(s, Action::None),
         (s, Command::Reload) => go(s, Action::ReloadConfig),
+
+        // Replay re-injects a cached transcript — independent of the recorder,
+        // so it's allowed in any ready state without changing it.
+        (s, Command::ReplayLast) => go(s, Action::ReplayLast),
     }
 }
 
@@ -107,6 +113,24 @@ mod tests {
             assert_eq!(t.action, Action::None);
             assert_eq!(t.response, Response::Ok(s));
         }
+    }
+
+    #[test]
+    fn replay_last_reinjects_without_changing_state() {
+        for s in [State::Idle, State::Recording, State::Transcribing] {
+            let t = apply(s, Command::ReplayLast);
+            assert_eq!(t.next, s, "replay-last must not change state");
+            assert_eq!(t.action, Action::ReplayLast);
+            assert_eq!(t.response, Response::Ok(s));
+        }
+    }
+
+    #[test]
+    fn replay_last_is_rejected_while_loading() {
+        assert!(matches!(
+            apply(State::Loading, Command::ReplayLast).response,
+            Response::Err(_)
+        ));
     }
 
     #[test]

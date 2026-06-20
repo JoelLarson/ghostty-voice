@@ -262,6 +262,11 @@ async fn perform(d: &mut Daemon, daemon: &Arc<Mutex<Daemon>>, action: Action) ->
             d.config = load_config(&d.config_path);
             Ok(())
         }
+        Action::ReplayLast => {
+            // Wired to the transcript cache in the delivery slice; until then
+            // there is nothing cached to replay.
+            anyhow::bail!("no transcript cached to replay")
+        }
     }
 }
 

@@ -11,6 +11,8 @@ pub enum Command {
     Cancel,
     Status,
     Reload,
+    /// Re-inject the most-recent cached transcript (recovery-only, S3).
+    ReplayLast,
 }
 
 /// The daemon's observable state. `Loading` is the startup window while the
@@ -46,6 +48,7 @@ impl Command {
             "cancel" => Ok(Command::Cancel),
             "status" => Ok(Command::Status),
             "reload" => Ok(Command::Reload),
+            "replay-last" => Ok(Command::ReplayLast),
             _ => Err(ProtocolError::UnknownCommand(word.to_owned())),
         }
     }
@@ -83,6 +86,7 @@ mod tests {
         assert_eq!(Command::parse("cancel").unwrap(), Command::Cancel);
         assert_eq!(Command::parse("status").unwrap(), Command::Status);
         assert_eq!(Command::parse("reload").unwrap(), Command::Reload);
+        assert_eq!(Command::parse("replay-last").unwrap(), Command::ReplayLast);
     }
 
     #[test]
