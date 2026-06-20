@@ -1,9 +1,10 @@
 ---
 id: TASK-6
 title: 'S6 — Continuous mode (north-star): clip pipeline + session assembly'
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-06-20 07:42'
+updated_date: '2026-06-20 10:21'
 labels:
   - needs-triage
 dependencies:
