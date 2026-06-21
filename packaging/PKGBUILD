@@ -50,6 +50,15 @@ package() {
   # whisper-server lives on PATH at the config default ([whisper].binary = "whisper-server").
   install -Dm755 whisper.cpp/build/bin/whisper-server "$pkgdir/usr/bin/whisper-server"
 
+  # whisper-server dynamically links whisper.cpp's shared libraries (libwhisper.so.1
+  # plus the ggml backends, including libggml-vulkan.so for GPU offload). Install
+  # them to /usr/lib (the default loader path), preserving the SONAME symlink chain
+  # (cp -P), so the server can actually start. Without this it dies at launch with
+  # "libwhisper.so.1: cannot open shared object file".
+  install -dm755 "$pkgdir/usr/lib"
+  find whisper.cpp/build \( -name 'libwhisper.so*' -o -name 'libggml*.so*' \) \
+    -exec cp -Pv -t "$pkgdir/usr/lib/" {} +
+
   # systemd USER unit (the daemon owns whisper-server's lifecycle, not systemd).
   install -Dm644 dist/ghostty-voiced.service \
     "$pkgdir/usr/lib/systemd/user/ghostty-voiced.service"
