@@ -1,9 +1,11 @@
 ---
 id: TASK-9.1
 title: 'talk-to slice 1: bare PTY proxy + debug injection (tracer bullet)'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - claude
 created_date: '2026-06-22 06:45'
+updated_date: '2026-06-22 06:53'
 labels:
   - needs-triage
   - talk-to
@@ -45,3 +47,30 @@ Run `cargo test` and (manually) `talk-to claude` / `talk-to ssh host claude`.
 - [ ] #5 The debug keypress injects a hardcoded string into the child's input line with no trailing Enter.
 - [ ] #6 Chicago-style TDD: passing tests written test-first for the proxy's testable logic, no mocked collaborators beyond the OS PTY boundary; `cargo test` green.
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+## Slice 1: bare PTY proxy + debug injection (tracer bullet)
+
+New workspace crate `crates/talk-to` (binary `talk-to`), libc-only OS glue. NO daemon coupling.
+
+### Pure, test-first (Chicago TDD, no doubles beyond the OS PTY boundary)
+Put the proxy's testable logic in `ghostty-voice-core`:
+- `pty.rs` (new): pure helpers driven test-first —
+  - `split_command(args) -> Result<(program, args)>` (argv parsing: first arg is the program, rest are its args; empty → error).
+  - `debug_inject_bytes(s) -> &[u8]` / the rule that injection carries NO trailing newline (assert the injected payload never ends in `\n`/`\r`).
+  - winsize passthrough math reused from `strip.rs` in 9.2; in 9.1 child winsize == terminal size (no reservation yet).
+
+### OS glue in `crates/talk-to/src/main.rs` (not unit-tested)
+- Parse argv via the pure `split_command`.
+- `TIOCGWINSZ` on stdin → forkpty with that winsize; child `execvp`s the program.
+- Raw-mode stdin via termios `cfmakeraw` + RAII restore guard.
+- poll(stdin, master): stdin→master, master→stdout verbatim. Ctrl-C reaches child as a passed-through 0x03 byte (raw mode).
+- SIGWINCH handler (AtomicBool flag) → `TIOCGWINSZ`→`TIOCSWINSZ` on master.
+- Debug key (e.g. F12 / a chosen control byte) → inject a HARDCODED string into master with no trailing newline.
+- On child EOF/exit: restore terminal, exit with child status.
+
+### Validation
+`cargo test` green (pure helpers). Manual `talk-to bash` / `talk-to claude` / `talk-to ssh host claude` is demo-only (interactive; not runnable headless here) — reported honestly.
+<!-- SECTION:PLAN:END -->
