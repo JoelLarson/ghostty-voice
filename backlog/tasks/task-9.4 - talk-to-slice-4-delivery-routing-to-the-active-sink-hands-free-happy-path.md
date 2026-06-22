@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - claude
 created_date: '2026-06-22 06:46'
-updated_date: '2026-06-22 07:10'
+updated_date: '2026-06-22 07:13'
 labels:
   - needs-triage
   - talk-to
@@ -49,9 +49,9 @@ task-9.2 (status strip) and task-9.3 (push-sink protocol + registry).
 <!-- AC:BEGIN -->
 - [ ] #1 With `talk-to ssh host claude` running, triggering a recording gets the spoken text into claude's input line over SSH, hands-free, with no trailing Enter.
 - [ ] #2 The bottom status strip reflects recording/transcribing/idle in real time.
-- [ ] #3 With no wrapper registered, focused-window Auto-type behaves exactly as today and existing tests still pass.
-- [ ] #4 The Transcript is cached before delivery is attempted (write-before-deliver preserved).
-- [ ] #5 Chicago-style TDD: a daemon-level integration test (real daemon, no mocks, mirroring ordered_drain.rs) proves a registered wrapper sink receives the pushed Transcript end-to-end; `cargo test` green.
+- [x] #3 With no wrapper registered, focused-window Auto-type behaves exactly as today and existing tests still pass.
+- [x] #4 The Transcript is cached before delivery is attempted (write-before-deliver preserved).
+- [x] #5 Chicago-style TDD: a daemon-level integration test (real daemon, no mocks, mirroring ordered_drain.rs) proves a registered wrapper sink receives the pushed Transcript end-to-end; `cargo test` green.
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -75,3 +75,13 @@ Route each drained Transcript to the ACTIVE sink instead of hard-calling ydotool
 ### Integration test (ghostty-voiced/tests, real daemon-style composition)
 `wrapper_delivery.rs` mirroring ordered_drain.rs: a real `DeliveryQueue` + real `SinkRegistry` + real socket wrapper peer; enqueue an utterance bound to a registered wrapper, set it ready, drain → assert the wrapper peer receives the exact pushed `transcript <text>` frame end-to-end (no trailing newline in the payload). Also assert: with NO wrapper (bound FocusedWindow), route is FocusedWindow (today's path), and existing tests still pass.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented: `Daemon.bindings` (seq→ActiveSink) captured at trigger time in both enqueue sites (stop_and_enqueue + continuous end_continuous). `drain_queue` now routes the ready head by its bound sink via `sinks.route(bound)`: FocusedWindow → today's `type_text` gated by Freshness (unchanged); Wrapper(id) → push `Frame::Transcript(text)+\n` down `sink_conns[id]` (no Freshness — exact PTY), hold if the sender vanished; Held → held-for-replay. Cache-before-deliver preserved (store_transcript before any branch). Bindings cleaned on resolve + empty/error paths. talk-to writes received transcript frames into the child PTY via injection_bytes (no trailing newline) and repaints the strip from live `state` frames.
+
+Integration test wrapper_delivery.rs (real DeliveryQueue + real SinkRegistry routing + real Frame over a real socket, mirrors ordered_drain.rs): a wrapper-bound utterance is delivered end-to-end and arrives with NO trailing newline; and with no wrapper registered the bound sink is FocusedWindow (today's path). All prior daemon tests (ordered_drain, accuracy_pipeline) still green — additivity confirmed.
+
+AC #3 (additivity), #4 (cache-before-deliver), #5 (Chicago TDD integration test, cargo test green) evidenced. AC #1 (hands-free spoken text into claude over SSH) and #2 (strip shows recording/transcribing live) require GPU/mic/SSH/real terminal — fully wired (state via watch→Frame::State, transcript via drain→Frame::Transcript→PTY) but live confirmation is demo-only.
+<!-- SECTION:NOTES:END -->
