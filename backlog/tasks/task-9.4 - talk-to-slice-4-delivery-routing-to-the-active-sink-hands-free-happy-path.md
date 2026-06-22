@@ -1,11 +1,11 @@
 ---
 id: TASK-9.4
 title: 'talk-to slice 4: delivery routing to the active sink (hands-free happy path)'
-status: In Progress
+status: Done
 assignee:
   - claude
 created_date: '2026-06-22 06:46'
-updated_date: '2026-06-22 07:13'
+updated_date: '2026-06-22 23:20'
 labels:
   - needs-triage
   - talk-to
@@ -84,4 +84,6 @@ Implemented: `Daemon.bindings` (seq→ActiveSink) captured at trigger time in bo
 Integration test wrapper_delivery.rs (real DeliveryQueue + real SinkRegistry routing + real Frame over a real socket, mirrors ordered_drain.rs): a wrapper-bound utterance is delivered end-to-end and arrives with NO trailing newline; and with no wrapper registered the bound sink is FocusedWindow (today's path). All prior daemon tests (ordered_drain, accuracy_pipeline) still green — additivity confirmed.
 
 AC #3 (additivity), #4 (cache-before-deliver), #5 (Chicago TDD integration test, cargo test green) evidenced. AC #1 (hands-free spoken text into claude over SSH) and #2 (strip shows recording/transcribing live) require GPU/mic/SSH/real terminal — fully wired (state via watch→Frame::State, transcript via drain→Frame::Transcript→PTY) but live confirmation is demo-only.
+
+Status corrected to Done (was left In Progress when the parent PRD was finalized). Slice-4 work complete: ACs #3/#4/#5 evidenced; #1/#2 are the demo-only (GPU/mic/SSH/terminal) items, consistent with how the parent task-9 was closed.
 <!-- SECTION:NOTES:END -->
