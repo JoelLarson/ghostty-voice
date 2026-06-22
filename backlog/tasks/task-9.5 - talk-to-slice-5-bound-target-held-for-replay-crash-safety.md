@@ -1,9 +1,11 @@
 ---
 id: TASK-9.5
 title: 'talk-to slice 5: bound target + held-for-replay (crash safety)'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - claude
 created_date: '2026-06-22 06:47'
+updated_date: '2026-06-22 07:14'
 labels:
   - needs-triage
   - talk-to
@@ -47,3 +49,20 @@ task-9.4 (delivery routing to the active sink).
 - [ ] #4 The focused-window sink reactivates after the wrapper disconnects.
 - [ ] #5 Chicago-style TDD: test-first unit tests (no doubles) for trigger-time binding and dead-bound-sink → held, plus integration coverage of the crash path; `cargo test` green.
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+## Slice 5: bound target + held-for-replay (crash safety)
+
+Trigger-time binding + dead-bound-sink→Held are ALREADY implemented in slices 3–4 (the correct end state): bindings captured at enqueue; `drain_queue` routes `Route::Held` → held-for-replay; `serve_sink` deregisters a dead wrapper so `is_live` is false at delivery; focused-window reactivates on disconnect. This slice adds the explicit TEST coverage the AC requires and verifies the crash path.
+
+### Tests (Chicago TDD, test-first where logic is new)
+1. Unit (sink.rs already has): trigger-time binding snapshot + dead-bound-sink→Held + never-redirected — present (10 tests). Confirm they cover AC #1/#3.
+2. Integration `held_for_replay.rs` (real socket + real SinkRegistry + real DeliveryQueue, mirrors ordered_drain.rs):
+   - Bind an utterance to a registered wrapper; the wrapper DIES (connection drops → deregister) BEFORE the transcript is ready; route(bound) → `Route::Held`; assert NOT delivered to the wrapper and NOT redirected to focused-window; the cached transcript is recoverable (assert `latest_transcript` returns it — write-before-deliver). After disconnect, registry.active() == FocusedWindow.
+   - A second utterance bound to a now-dead wrapper while a DIFFERENT focus is active still Holds (never silent-redirect to current focus).
+
+### Verify
+Real-daemon smoke: register a wrapper sink, drop it, confirm the daemon logs deregistration + focused-window reactivation (already shown in slice 3). The full kill-mid-flight→replay-last demo needs GPU/mic and is demo-only; the crash routing + cache recovery is proven by the integration test.
+<!-- SECTION:PLAN:END -->
