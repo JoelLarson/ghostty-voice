@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - claude
 created_date: '2026-06-22 06:46'
-updated_date: '2026-06-22 06:57'
+updated_date: '2026-06-22 07:00'
 labels:
   - needs-triage
   - talk-to
@@ -48,8 +48,8 @@ task-9.1 (the PTY proxy this builds on).
 - [ ] #1 The wrapped child occupies H-1 rows; the reserved bottom row shows a placeholder state indicator.
 - [ ] #2 The child's region and the strip never overwrite each other.
 - [ ] #3 Resizing recomputes geometry; both child and strip stay correct (child winsize tracks to (H-1, W)).
-- [ ] #4 Tiny/short-terminal edge cases are handled without panic or corruption.
-- [ ] #5 Chicago-style TDD: unit tests written test-first (no doubles) for strip geometry across sizes and edge cases, asserting the (H-1, W)/origin invariant; `cargo test` green.
+- [x] #4 Tiny/short-terminal edge cases are handled without panic or corruption.
+- [x] #5 Chicago-style TDD: unit tests written test-first (no doubles) for strip geometry across sizes and edge cases, asserting the (H-1, W)/origin invariant; `cargo test` green.
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -72,3 +72,13 @@ Tests: invariant `(H-strip, W)` + origin across normal/tiny/1-row/zero sizes; st
 
 Validation: `cargo test` green for geometry; headless geometry demo (print computed winsizes). Live visual is demo-only.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented pure `ghostty_voice_core::strip`: `geometry(rows,cols,strip_height) -> {child(H-strip,W), strip_row}` (origin/width invariant, saturating on degenerate sizes) and `render(strip_row,state)` (DECSC → CSI row;1H → CSI 2K → ● state → DECRC). 8 test-first unit tests; the renderer smoke test guards the structural contract.
+
+Wired into talk-to: `child_layout` reduces forkpty/TIOCSWINSZ to (H-1,W); DECSTBM scroll region confines line-mode scrolling to the child rows (alt-screen TUIs unaffected); placeholder `● idle` painted at startup, after each child-output chunk, and on SIGWINCH resize; scroll region reset on exit. Headless smoke shows correct DECSC/strip/DECRC emission + child passthrough + exit code.
+
+AC #4 (edge cases, no panic) and #5 (Chicago TDD geometry test-first, cargo test green — 192 core tests) fully evidenced. AC #1–#3 (live H-1 occupancy, no-overwrite, resize reflow) are structurally guaranteed by the tested invariant (strip_row > child.rows) + save/restore cursor and are wired, but live visual confirmation is demo-only on a real terminal.
+<!-- SECTION:NOTES:END -->
