@@ -1,0 +1,17 @@
+[package]
+name = "talk-to"
+version = "0.0.0"
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "talk-to"
+path = "src/main.rs"
+
+[dependencies]
+ghostty-voice-core = { path = "../ghostty-voice-core" }
+anyhow = "1.0.102"
+# Direct OS glue for the PTY proxy: forkpty, termios raw mode, winsize ioctls,
+# poll, and the SIGWINCH handler. This crate is the foreground wrapper; the
+# daemon stays on tokio. Pure decisions live in ghostty-voice-core::pty.
+libc = "0.2"

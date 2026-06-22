@@ -20,6 +20,14 @@ post_install() {
        For dictation before/without a graphical login:
          loginctl enable-linger "$USER"
 
+    5. Optional: drive a single agent deterministically with the PTY wrapper.
+       `talk-to <command>` wraps the agent on a pseudo-terminal and registers a
+       wrapper sink, so your dictation is injected straight into that agent
+       (no trailing Enter), not whatever window is focused:
+         talk-to claude
+         talk-to ssh host claude
+       Exit it to return to the default focused-window (ydotool) dictation.
+
     See /usr/share/doc/ghostty-voice/README.md for the full guide.
 EOF
 }

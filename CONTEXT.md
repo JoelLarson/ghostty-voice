@@ -60,24 +60,52 @@ are assembled, in order, into one **Transcript** delivered at the end.
 Abort the **Recorder**'s current recording and discard its audio. Does not touch
 utterances already in the **Delivery queue**.
 
+**Delivery sink** _(or **Sink**)_:
+A destination a **Transcript** is delivered to. Exactly **one sink is active** at any
+moment; the daemon always delivers to the active sink. Two kinds:
+- **Focused-window sink** — the default. Types into whatever window is focused via
+  `ydotool`. Reproduces the original behavior; the only sink when nothing else is
+  registered. Carries the "wrong-window" risk that the **Freshness window** guards against.
+- **Wrapper sink** — a running `talk-to`. Registers over the control socket and receives
+  the **Transcript** *pushed* from the daemon, then writes it into the wrapped agent's PTY.
+  Delivery is to a known pipe, so there is no "wrong-window" risk.
+
+Switching is sequential, never concurrent — launching a wrapper makes it the active sink;
+it can be switched back to the focused-window sink explicitly; only ever **one active at a
+time**. An utterance's target sink is **bound when the utterance is triggered**, not when
+its transcript is ready. If the bound sink is gone at delivery, the transcript is
+**Held-for-replay** and you are asked where to send it — it is **never** silently
+redirected to whatever sink is active now.
+
 **Auto-type**:
-Injecting a **Transcript** into the focused window via `ydotool`, **without** pressing
-Enter (the human reviews before submitting). Gated by the **Freshness window**.
+Delivering a **Transcript** to the **active Delivery sink**, **without** pressing Enter
+(the human reviews before submitting). The default sink types into the focused window via
+`ydotool`; a **wrapper sink** writes into the wrapped agent's PTY. Gated by the
+**Freshness window** *for the focused-window sink* (see that entry).
 
 **Freshness window**:
-A generous safety backstop (~15 min) after a recording ends, within which **Auto-type** is
-allowed. The guiding priority is **hands-free** delivery, so the window is sized so any
-realistic batch transcription types itself when done; it only holds a transcript in the
-genuine pathological case (server down well beyond the window). Not a routine gate.
+A generous time-based backstop (~15 min) after a recording ends, gating **Auto-type** **for
+the focused-window sink only**. That sink has no window identity (the daemon has no
+compositor introspection — S8), so it cannot tell whether you are still in the originally
+targeted window; the window is a **best-effort proxy** for "you're probably still there." A
+realistic batch transcription types itself well within it; past it, the transcript is
+**Held-for-replay**. It can still mis-target on a fast focus switch — the accepted limit of
+a sink with no target identity. The **wrapper sink** does **not** use it: its target is an
+exact PTY, so it delivers whenever ready, or holds if that PTY died.
 
 **Held for replay**:
-A terminal state for an utterance whose transcript was *not* auto-typed (stale, server was
-down, or type failed). The transcript is cached and recovered on demand via **Replay-last**.
+A terminal state for an utterance whose **Transcript** was *not* delivered to its **bound
+target** — the focused-window sink went stale (past the **Freshness window**), a delivery
+failed, or a **wrapper sink** died before delivery. The transcript is cached; recovery is
+**never** a silent redirect to the current focus — it is re-routed on demand to a chosen
+sink via **Replay-last**.
 
 **Replay-last**:
-Re-inject the most-recent cached **Transcript** on demand (after refocusing Ghostty).
-**Recovery-only** — for when **Auto-type** landed in the wrong window; not part of the
-hands-free happy path.
+Re-route a cached **Transcript** to a chosen **Delivery sink** on demand — by default the
+most-recent held one. **Recovery-only**: for when a delivery's **bound target** was gone
+(you left the focused window, or a **wrapper sink** crashed). The natural generalization is
+a transcript-history surface — cached transcripts newest→oldest, route any to any sink — of
+which Replay-last is the top entry. Not part of the hands-free happy path.
 
 **Correction dictionary**:
 A deterministic, case-insensitive find/replace post-processing step that fixes jargon

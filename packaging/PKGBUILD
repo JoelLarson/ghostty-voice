@@ -1,6 +1,6 @@
 # Maintainer: Joel Larson
 pkgname=ghostty-voice
-pkgver=0.1.7
+pkgver=0.1.8
 pkgrel=1
 pkgdesc="Voice dictation into the focused Ghostty terminal (Wayland, DE-agnostic), local Whisper over Vulkan"
 arch=('x86_64')
@@ -28,7 +28,7 @@ _whisper_tag="v1.7.4"
 build() {
   cd "$srcdir/${pkgname}-${pkgver}"
 
-  # 1. Rust workspace (the three binaries + the S1 skeleton).
+  # 1. Rust workspace (the daemon, ctl client, talk-to wrapper, + the S1 skeleton).
   cargo build --release --locked
 
   # 2. Vendored whisper.cpp built with Vulkan (-DGGML_VULKAN=1).
@@ -46,6 +46,10 @@ package() {
   install -Dm755 target/release/ghostty-voice      "$pkgdir/usr/bin/ghostty-voice"
   install -Dm755 target/release/ghostty-voiced     "$pkgdir/usr/bin/ghostty-voiced"
   install -Dm755 target/release/ghostty-voice-ctl  "$pkgdir/usr/bin/ghostty-voice-ctl"
+  # talk-to: the PTY wrapper sink — `talk-to <command>` (e.g. talk-to ssh host
+  # claude) registers with the daemon and gets the Transcript injected into the
+  # wrapped agent's PTY instead of the focused window.
+  install -Dm755 target/release/talk-to            "$pkgdir/usr/bin/talk-to"
 
   # whisper-server lives on PATH at the config default ([whisper].binary = "whisper-server").
   install -Dm755 whisper.cpp/build/bin/whisper-server "$pkgdir/usr/bin/whisper-server"

@@ -101,6 +101,13 @@ pub fn apply(state: State, command: Command) -> Transition {
         // Replay re-injects a cached transcript — independent of the recorder,
         // so it's allowed in any ready state without changing it.
         (s, Command::ReplayLast) => go(s, Action::ReplayLast),
+
+        // Registering a wrapper sink is handled at the connection layer (the
+        // persistent registered-sink path), not the recorder state machine — it
+        // never changes recording state. This arm is a defensive no-op so the
+        // match stays total; in practice `register-sink` is intercepted before
+        // it ever reaches here.
+        (s, Command::RegisterSink) => go(s, Action::None),
     }
 }
 

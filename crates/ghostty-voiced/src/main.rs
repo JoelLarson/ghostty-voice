@@ -13,6 +13,7 @@
 
 mod vulkan_enum;
 
+use std::collections::HashMap;
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::process::Child as RecorderChild;
@@ -25,14 +26,16 @@ use ghostty_voice_core::config::{Config, expand_tilde};
 use ghostty_voice_core::delivery::Delivery;
 use ghostty_voice_core::gesture::ButtonEvent;
 use ghostty_voice_core::machine::{self, Action};
-use ghostty_voice_core::protocol::{Command, ProtocolError, Response, State};
+use ghostty_voice_core::protocol::{Command, Frame, ProtocolError, Response, State};
 use ghostty_voice_core::queue::DeliveryQueue;
+use ghostty_voice_core::sink::{ActiveSink, Route, SinkId, SinkRegistry};
 use ghostty_voice_core::supervisor::Backoff;
 use ghostty_voice_core::transcript::parse_transcript;
 use ghostty_voice_core::vulkan::resolve_device_index;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpStream, UnixListener, UnixStream};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, mpsc, watch};
 use tracing::{error, info, warn};
 
 /// All daemon state, behind a single async mutex.
@@ -60,6 +63,22 @@ struct Daemon {
     /// Monotonically incremented each time a continuous session starts, so a
     /// session's driver task can tell it has been superseded/cancelled and stop.
     continuous_gen: u64,
+    /// The active **Delivery sink** tracker (IDEAS.md #4): exactly one sink is
+    /// active; a registered `talk-to` **wrapper sink** preempts the default
+    /// **focused-window sink** for its lifetime.
+    sinks: SinkRegistry,
+    /// Push channels to each registered wrapper sink's persistent connection,
+    /// keyed by sink id. The drain writes a pre-encoded [`Frame`] line here to
+    /// deliver a Transcript to that wrapper's PTY.
+    sink_conns: HashMap<SinkId, mpsc::UnboundedSender<String>>,
+    /// Each in-flight utterance's **bound target sink**, keyed by its queue seq.
+    /// Bound at *trigger time* (when recording starts/stops), never at delivery
+    /// time — so switching sinks mid-utterance can't misroute it, and a bound
+    /// wrapper that dies before delivery is Held-for-replay, not redirected.
+    bindings: HashMap<u64, ActiveSink>,
+    /// Broadcasts daemon [`State`] changes to every registered wrapper sink so
+    /// each one's status strip stays live. Updated via [`Daemon::set_state`].
+    state_tx: watch::Sender<State>,
     shutting_down: bool,
 }
 
@@ -80,6 +99,13 @@ struct ContinuousSession {
 impl Daemon {
     fn now_offset(&self) -> Duration {
         self.clock_base.elapsed()
+    }
+    /// Set the observable state and broadcast it to every registered wrapper
+    /// sink (so each `talk-to` status strip tracks the daemon live). The single
+    /// chokepoint for state changes — call this instead of writing `state`.
+    fn set_state(&mut self, state: State) {
+        self.state = state;
+        let _ = self.state_tx.send(state);
     }
     fn recordings_dir(&self) -> PathBuf {
         self.cache_root.join("recordings")
@@ -112,6 +138,7 @@ async fn main() -> Result<()> {
     let listener =
         UnixListener::bind(&socket).with_context(|| format!("binding {}", socket.display()))?;
 
+    let (state_tx, _state_rx) = watch::channel(State::Loading);
     let daemon = Arc::new(Mutex::new(Daemon {
         state: State::Loading,
         config,
@@ -125,6 +152,10 @@ async fn main() -> Result<()> {
         draining: false,
         continuous: None,
         continuous_gen: 0,
+        sinks: SinkRegistry::new(),
+        sink_conns: HashMap::new(),
+        bindings: HashMap::new(),
+        state_tx,
         shutting_down: false,
     }));
 
@@ -369,10 +400,93 @@ async fn handle_conn(stream: UnixStream, daemon: Arc<Mutex<Daemon>>) -> Result<(
     let mut line = String::new();
     reader.read_line(&mut line).await?;
 
+    // `register-sink` is the one persistent command: the connection stays open
+    // and the daemon *pushes* frames down it until the client disconnects.
+    if matches!(Command::parse(&line), Ok(Command::RegisterSink)) {
+        return serve_sink(reader, write_half, daemon).await;
+    }
+
     let response = process_command(&line, &daemon).await;
     write_half
         .write_all(format!("{}\n", response.encode()).as_bytes())
         .await?;
+    Ok(())
+}
+
+/// Serve a registered **wrapper sink** (`talk-to`, IDEAS.md #4) on a persistent
+/// connection. Registration makes this the active Delivery sink; the daemon then
+/// pushes [`Frame`]s — `state` changes (from the watch channel) for the status
+/// strip and `transcript` deliveries (from this sink's mpsc, slice 4) — until the
+/// client disconnects, at which point the focused-window sink reactivates.
+async fn serve_sink(
+    mut reader: BufReader<OwnedReadHalf>,
+    mut write_half: OwnedWriteHalf,
+    daemon: Arc<Mutex<Daemon>>,
+) -> Result<()> {
+    // Register and capture this sink's push channel + a state subscription. Done
+    // under one lock so the initial state we send matches what the watch will
+    // report changes against (no missed/duplicated state push).
+    let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+    let (id, mut state_rx, current) = {
+        let mut d = daemon.lock().await;
+        let id = d.sinks.register();
+        d.sink_conns.insert(id, tx);
+        (id, d.state_tx.subscribe(), d.state)
+    };
+    info!("wrapper sink {id:?} registered — now the active Delivery sink");
+
+    // Push the current state immediately so the strip is correct on connect.
+    let _ = write_half
+        .write_all(format!("{}\n", Frame::State(current).encode()).as_bytes())
+        .await;
+
+    let mut sink_line = String::new();
+    loop {
+        sink_line.clear();
+        tokio::select! {
+            // A pushed Transcript (or other pre-encoded frame) to deliver.
+            msg = rx.recv() => {
+                match msg {
+                    Some(line) => {
+                        if write_half.write_all(line.as_bytes()).await.is_err() {
+                            break;
+                        }
+                    }
+                    None => break, // daemon dropped the sender
+                }
+            }
+            // A daemon state change → push it to the strip.
+            changed = state_rx.changed() => {
+                if changed.is_err() {
+                    break; // state channel closed (shutdown)
+                }
+                let s = *state_rx.borrow();
+                if write_half
+                    .write_all(format!("{}\n", Frame::State(s).encode()).as_bytes())
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            // Detect client disconnect: a registered sink sends nothing more, so
+            // any read returning 0 (EOF) or erroring means `talk-to` is gone.
+            read = reader.read_line(&mut sink_line) => {
+                match read {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {} // unexpected extra input — ignore
+                }
+            }
+        }
+    }
+
+    // Deregister: the focused-window sink reactivates (the default floor).
+    {
+        let mut d = daemon.lock().await;
+        d.sinks.deregister(id);
+        d.sink_conns.remove(&id);
+    }
+    info!("wrapper sink {id:?} deregistered — focused-window sink reactivated");
     Ok(())
 }
 
@@ -394,7 +508,7 @@ async fn apply_command(command: Command, daemon: &Arc<Mutex<Daemon>>) -> Respons
     let transition = machine::apply(d.state, command);
     match perform(&mut d, daemon, transition.action).await {
         Ok(()) => {
-            d.state = transition.next;
+            d.set_state(transition.next);
             transition.response
         }
         Err(e) => Response::Err(e.to_string()),
@@ -815,7 +929,7 @@ async fn end_continuous(
         }
         d.continuous = None;
         if d.state == State::Recording {
-            d.state = State::Idle;
+            d.set_state(State::Idle);
         }
         d.config.clone()
     };
@@ -834,6 +948,8 @@ async fn end_continuous(
         let mut d = daemon.lock().await;
         let now = d.now_offset();
         let seq = d.queue.enqueue_at(now);
+        let bound = d.sinks.active();
+        d.bindings.insert(seq, bound);
         d.queue.set_ready(seq, trimmed.to_owned());
         seq
     };
@@ -860,6 +976,9 @@ async fn stop_and_enqueue(d: &mut Daemon, daemon: &Arc<Mutex<Daemon>>) {
 
     let record_end = d.now_offset();
     let seq = d.queue.enqueue_at(record_end);
+    // Bind the target sink NOW (trigger time), not when the transcript is ready.
+    let bound = d.sinks.active();
+    d.bindings.insert(seq, bound);
     play_stop_cue(&d.config);
 
     spawn_transcription(daemon.clone(), seq, wav);
@@ -877,12 +996,16 @@ fn spawn_transcription(daemon: Arc<Mutex<Daemon>>, seq: u64, wav: PathBuf) {
             Ok(None) => {
                 // Empty/silence: the stop cue already played; type nothing.
                 info!("utterance {seq}: no speech detected — nothing typed");
-                daemon.lock().await.queue.resolve(seq);
+                let mut d = daemon.lock().await;
+                d.queue.resolve(seq);
+                d.bindings.remove(&seq);
             }
             Err(e) => {
                 error!("utterance {seq}: transcription failed: {e}");
                 notify("ghostty-voice: transcription failed — recording kept, re-speak");
-                daemon.lock().await.queue.resolve(seq);
+                let mut d = daemon.lock().await;
+                d.queue.resolve(seq);
+                d.bindings.remove(&seq);
             }
         }
         let _ = std::fs::remove_file(&wav);
@@ -972,17 +1095,32 @@ async fn drain_queue(daemon: &Arc<Mutex<Daemon>>) {
 
     loop {
         // Decide the next action while holding the lock, then release it to do IO.
+        // Route by the utterance's *bound* sink (trigger-time), not whatever is
+        // active now; the focused-window sink still honors the Freshness window,
+        // the wrapper sink does not (its PTY target is exact).
         let next = {
             let d = daemon.lock().await;
             let now = d.now_offset();
             let window = Duration::from_secs(d.config.cache.retry_window_seconds);
             d.queue
                 .head_delivery(now, window)
-                .map(|(seq, transcript, delivery)| {
+                .map(|(seq, transcript, freshness)| {
+                    let bound = d
+                        .bindings
+                        .get(&seq)
+                        .copied()
+                        .unwrap_or(ActiveSink::FocusedWindow);
+                    let route = d.sinks.route(bound);
+                    let sender = match route {
+                        Route::Wrapper(id) => d.sink_conns.get(&id).cloned(),
+                        _ => None,
+                    };
                     (
                         seq,
                         transcript.to_owned(),
-                        delivery,
+                        freshness,
+                        route,
+                        sender,
                         d.transcripts_dir(),
                         d.config.cache.transcript_keep,
                         d.config.inject.key_delay_ms,
@@ -990,40 +1128,72 @@ async fn drain_queue(daemon: &Arc<Mutex<Daemon>>) {
                 })
         };
 
-        let Some((seq, transcript, delivery, tdir, tkeep, key_delay)) = next else {
+        let Some((seq, transcript, freshness, route, sender, tdir, tkeep, key_delay)) = next else {
             break; // head is pending or queue is empty
         };
 
-        // Cache the transcript BEFORE typing, so delivery survives a type fail.
+        // Cache the transcript BEFORE delivery, so it survives a failed write —
+        // recoverable via `replay-last` regardless of which sink it was bound to.
         if let Err(e) = ghostty_voice_io::cache::store_transcript(&tdir, &transcript, tkeep) {
             warn!("could not cache transcript: {e}");
         }
 
-        match delivery {
-            Delivery::AutoType => {
-                let text = transcript.clone();
-                let typed = tokio::task::spawn_blocking(move || {
-                    ghostty_voice_io::inject::type_text(&text, key_delay)
-                })
-                .await;
-                match typed {
-                    Ok(Ok(())) => info!("utterance {seq}: auto-typed"),
-                    Ok(Err(e)) => {
-                        // Typing failed (e.g. ydotoold down). The transcript is
-                        // already cached, so recover with `replay-last`.
-                        error!("utterance {seq}: type failed: {e}");
-                        notify("ghostty-voice: type failed — run `replay-last` after refocusing");
+        match route {
+            // Focused-window sink: today's `ydotool` Auto-type, gated by the
+            // Freshness window (unchanged when no wrapper is registered).
+            Route::FocusedWindow => match freshness {
+                Delivery::AutoType => {
+                    let text = transcript.clone();
+                    let typed = tokio::task::spawn_blocking(move || {
+                        ghostty_voice_io::inject::type_text(&text, key_delay)
+                    })
+                    .await;
+                    match typed {
+                        Ok(Ok(())) => info!("utterance {seq}: auto-typed (focused-window sink)"),
+                        Ok(Err(e)) => {
+                            error!("utterance {seq}: type failed: {e}");
+                            notify(
+                                "ghostty-voice: type failed — run `replay-last` after refocusing",
+                            );
+                        }
+                        Err(join) => error!("utterance {seq}: type task panicked: {join}"),
                     }
-                    Err(join) => error!("utterance {seq}: type task panicked: {join}"),
+                }
+                Delivery::HoldForReplay => {
+                    info!("utterance {seq}: held for replay (focused-window sink stale)");
+                    notify("ghostty-voice: transcript held — run `replay-last` after refocusing");
+                }
+            },
+            // Wrapper sink: push the Transcript frame down the registered
+            // connection; `talk-to` writes it into the agent's PTY (no Enter).
+            // No Freshness window — the PTY target is exact.
+            Route::Wrapper(id) => {
+                let pushed = sender.is_some_and(|tx| {
+                    tx.send(format!(
+                        "{}\n",
+                        Frame::Transcript(transcript.clone()).encode()
+                    ))
+                    .is_ok()
+                });
+                if pushed {
+                    info!("utterance {seq}: delivered to wrapper sink {id:?}");
+                } else {
+                    // The wrapper vanished between routing and the send — hold.
+                    info!("utterance {seq}: wrapper sink {id:?} gone at send — held for replay");
+                    notify("ghostty-voice: wrapper exited before delivery — run `replay-last`");
                 }
             }
-            Delivery::HoldForReplay => {
-                info!("utterance {seq}: held for replay (stale)");
-                notify("ghostty-voice: transcript held — run `replay-last` after refocusing");
+            // The bound wrapper sink died before delivery: Held-for-replay, never
+            // silently redirected to whatever window is focused now.
+            Route::Held => {
+                info!("utterance {seq}: bound wrapper sink gone — held for replay");
+                notify("ghostty-voice: wrapper exited before delivery — run `replay-last`");
             }
         }
 
-        daemon.lock().await.queue.resolve(seq);
+        let mut d = daemon.lock().await;
+        d.queue.resolve(seq);
+        d.bindings.remove(&seq);
     }
 
     daemon.lock().await.draining = false;
@@ -1052,7 +1222,7 @@ fn arm_recording_cap(daemon: Arc<Mutex<Daemon>>, seconds: u64) {
             notify("ghostty-voice: recording hit the time cap — stopped and queued");
             let dc = daemon.clone();
             stop_and_enqueue(&mut d, &dc).await;
-            d.state = State::Idle;
+            d.set_state(State::Idle);
         }
     });
 }
@@ -1084,7 +1254,7 @@ fn watch_vad_autostop(daemon: Arc<Mutex<Daemon>>) {
                     info!("VAD: sox auto-stopped on silence — enqueueing utterance");
                     let dc = daemon.clone();
                     stop_and_enqueue(&mut d, &dc).await;
-                    d.state = State::Idle;
+                    d.set_state(State::Idle);
                 }
                 return;
             }
@@ -1121,7 +1291,7 @@ fn play_stop_cue(config: &Config) {
 // ---- helpers ---------------------------------------------------------------
 
 async fn set_state(daemon: &Arc<Mutex<Daemon>>, state: State) {
-    daemon.lock().await.state = state;
+    daemon.lock().await.set_state(state);
 }
 
 fn config_path() -> Result<PathBuf> {

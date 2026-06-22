@@ -1,0 +1,416 @@
+//! talk-to — a PTY wrapper that injects voice into a wrapped agent (IDEAS.md #4).
+//!
+//! Slice 1 (tracer bullet): spawn `<command>` on a pseudo-terminal, forward
+//! bytes verbatim in raw mode, track terminal resize onto the child winsize, and
+//! on a debug key inject a HARDCODED string into the child's PTY input with NO
+//! trailing newline (review-before-Enter). No daemon coupling yet — this proves
+//! PTY + transparent passthrough + injection + SSH in isolation. The wrapped
+//! command is just a command, so `talk-to ssh host claude` works unchanged:
+//! injected bytes ride the existing ssh stdin pipe to the remote agent.
+//!
+//! This binary is the OS-glue boundary (forkpty / termios / poll); the pure
+//! decisions it makes live in `ghostty_voice_core::pty` and are unit-tested.
+
+use std::ffi::CString;
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::io::RawFd;
+use std::os::unix::net::UnixStream;
+use std::path::PathBuf;
+use std::process::exit;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use anyhow::{Result, bail};
+use ghostty_voice_core::protocol::Frame;
+use ghostty_voice_core::pty::{PtyError, injection_bytes, split_command};
+use ghostty_voice_core::strip;
+
+const STDIN: RawFd = libc::STDIN_FILENO;
+const STDOUT: RawFd = libc::STDOUT_FILENO;
+
+/// Rows reserved at the bottom for the voice status strip.
+const STRIP_HEIGHT: u16 = 1;
+
+/// The debug injection trigger: F12 (`ESC [ 24 ~`, the common xterm encoding).
+/// Slice 4 replaces this keypress path with a Transcript pushed from the daemon.
+const DEBUG_KEY: &[u8] = b"\x1b[24~";
+/// The hardcoded string slice 1 injects, to prove the channel end-to-end.
+const DEBUG_STRING: &str = "create a function that reverses a string";
+
+/// Set by the SIGWINCH handler; the poll loop drains it and re-sizes the child.
+static RESIZED: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn on_sigwinch(_sig: libc::c_int) {
+    RESIZED.store(true, Ordering::SeqCst);
+}
+
+/// State shared between the daemon-socket client thread and the proxy loop.
+///
+/// The client thread only ever *writes* here; the proxy loop drains it. That
+/// keeps a single writer to both the terminal (strip paints) and the child PTY
+/// (keystrokes + injected Transcript), so escape sequences and bytes never
+/// interleave across threads.
+#[derive(Default)]
+struct Shared {
+    /// Latest voice-state token for the strip (from `state` frames), e.g.
+    /// `idle`, `recording`, `transcribing`, or `offline` when the daemon is
+    /// unreachable.
+    state: String,
+    /// Transcript bytes waiting to be injected into the child PTY (from
+    /// `transcript` frames), already stripped of any trailing newline.
+    pending_inject: Vec<u8>,
+}
+
+fn main() -> Result<()> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let (program, rest) = match split_command(&args) {
+        Ok(split) => split,
+        Err(PtyError::EmptyCommand) => {
+            eprintln!("usage: talk-to <command> [args...]   (e.g. talk-to ssh host claude)");
+            exit(2);
+        }
+    };
+
+    // Reserve the bottom strip: the child is born sized to (H - STRIP_HEIGHT, W)
+    // so it never addresses the row we paint the voice state on.
+    let term = get_winsize(STDIN);
+    let (child_ws, strip_row) = child_layout(&term);
+
+    let (pid, master) = fork_pty(&child_ws, program, rest)?;
+
+    install_sigwinch();
+    // Raw mode on our stdin so keystrokes (including Ctrl-C as a 0x03 byte) flow
+    // straight to the child's PTY rather than being interpreted by our terminal.
+    let _raw = RawGuard::enter();
+
+    // Register as a wrapper sink with the daemon and track its pushed state /
+    // Transcripts. Connection failure is non-fatal — the wrapper still works as
+    // a pure passthrough, the strip just reads `offline`.
+    let shared = Arc::new(Mutex::new(Shared {
+        state: "idle".to_owned(),
+        pending_inject: Vec::new(),
+    }));
+    spawn_sink_client(shared.clone());
+
+    // Protect the strip from line-mode scrolling and paint the initial state.
+    set_scroll_region(child_ws.ws_row);
+    paint_strip(strip_row, "idle");
+
+    let status = proxy_loop(master, pid, strip_row, shared);
+
+    // Restore the full-screen scroll region and the terminal before exiting.
+    reset_scroll_region();
+    drop(_raw);
+    exit(status);
+}
+
+/// Derive the child PTY winsize (full width, bottom strip reserved) and the
+/// 1-based strip row from the real terminal size.
+fn child_layout(term: &libc::winsize) -> (libc::winsize, u16) {
+    let geo = strip::geometry(term.ws_row, term.ws_col, STRIP_HEIGHT);
+    let mut ws = *term;
+    ws.ws_row = geo.child.rows;
+    ws.ws_col = geo.child.cols;
+    (ws, geo.strip_row)
+}
+
+/// The forwarding loop: stdin → child PTY, child PTY → stdout, verbatim. Returns
+/// the child's exit code once its PTY closes. The bottom strip is repainted after
+/// child output and recomputed on resize so it stays visible and correct.
+fn proxy_loop(
+    master: RawFd,
+    pid: libc::pid_t,
+    mut strip_row: u16,
+    shared: Arc<Mutex<Shared>>,
+) -> i32 {
+    // The last state token we painted, so we only repaint the strip on a change.
+    let mut painted_state = "idle".to_owned();
+    let mut fds = [
+        libc::pollfd {
+            fd: STDIN,
+            events: libc::POLLIN,
+            revents: 0,
+        },
+        libc::pollfd {
+            fd: master,
+            events: libc::POLLIN,
+            revents: 0,
+        },
+    ];
+    let mut buf = [0u8; 8192];
+
+    loop {
+        if RESIZED.swap(false, Ordering::SeqCst) {
+            // A SIGWINCH arrived: re-read our size, recompute the reserved strip,
+            // push the reduced winsize onto the child so it reflows, and repaint.
+            let term = get_winsize(STDIN);
+            let (child_ws, new_strip_row) = child_layout(&term);
+            set_winsize(master, &child_ws);
+            strip_row = new_strip_row;
+            set_scroll_region(child_ws.ws_row);
+            paint_strip(strip_row, &painted_state);
+        }
+
+        // Apply whatever the daemon-socket client produced: inject pending
+        // Transcript bytes into the child (no trailing newline — already stripped
+        // by `injection_bytes`), and repaint the strip if the voice state changed.
+        let (inject, state_now) = {
+            let mut sh = shared.lock().unwrap();
+            (std::mem::take(&mut sh.pending_inject), sh.state.clone())
+        };
+        if !inject.is_empty() {
+            write_all_fd(master, &inject);
+        }
+        if state_now != painted_state {
+            painted_state = state_now;
+            paint_strip(strip_row, &painted_state);
+        }
+
+        let n = unsafe { libc::poll(fds.as_mut_ptr(), 2, 200) };
+        if n < 0 {
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::Interrupted {
+                continue; // SIGWINCH (or similar) — loop re-checks RESIZED
+            }
+            break;
+        }
+
+        // stdin → child PTY (forward keystrokes; intercept the debug key).
+        if fds[0].revents & libc::POLLIN != 0 {
+            let r = unsafe { libc::read(STDIN, buf.as_mut_ptr().cast(), buf.len()) };
+            if r > 0 {
+                let data = &buf[..r as usize];
+                if data == DEBUG_KEY {
+                    // Inject the hardcoded string with NO trailing newline; the
+                    // debug key itself is consumed (not forwarded).
+                    write_all_fd(master, &injection_bytes(DEBUG_STRING));
+                } else {
+                    write_all_fd(master, data);
+                }
+            }
+        }
+
+        // child PTY → stdout (paint the child's TUI verbatim).
+        if fds[1].revents & libc::POLLIN != 0 {
+            let r = unsafe { libc::read(master, buf.as_mut_ptr().cast(), buf.len()) };
+            if r <= 0 {
+                break; // child closed its PTY (exited)
+            }
+            write_all_fd(STDOUT, &buf[..r as usize]);
+            // Keep the strip visible after the child paints its region.
+            paint_strip(strip_row, &painted_state);
+        }
+        if fds[1].revents & (libc::POLLHUP | libc::POLLERR) != 0 {
+            break;
+        }
+    }
+
+    reap(pid)
+}
+
+/// Wait for the child and return its exit code (128+signal if it was killed).
+fn reap(pid: libc::pid_t) -> i32 {
+    let mut status: libc::c_int = 0;
+    unsafe { libc::waitpid(pid, &mut status, 0) };
+    if libc::WIFEXITED(status) {
+        libc::WEXITSTATUS(status)
+    } else if libc::WIFSIGNALED(status) {
+        128 + libc::WTERMSIG(status)
+    } else {
+        1
+    }
+}
+
+// ---- OS glue ---------------------------------------------------------------
+
+/// `forkpty` + `execvp` the wrapped program. Returns `(child pid, master fd)`.
+/// In the child this never returns (it execs or exits).
+fn fork_pty(ws: &libc::winsize, program: &str, rest: &[String]) -> Result<(libc::pid_t, RawFd)> {
+    let mut master: RawFd = -1;
+    // SAFETY: standard forkpty contract. We pass our desired winsize so the
+    // slave is created already sized; name/termios default.
+    let pid = unsafe {
+        libc::forkpty(
+            &mut master,
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            ws as *const libc::winsize,
+        )
+    };
+    if pid < 0 {
+        bail!("forkpty failed: {}", std::io::Error::last_os_error());
+    }
+    if pid == 0 {
+        // Child: forkpty has already made the slave our controlling terminal and
+        // wired stdin/stdout/stderr to it. Exec the wrapped command.
+        exec_child(program, rest);
+        // exec_child only returns on failure.
+        eprintln!("talk-to: failed to exec {program}");
+        unsafe { libc::_exit(127) };
+    }
+    Ok((pid, master))
+}
+
+/// Replace this (child) process image with the wrapped command. argv[0] is the
+/// program; the rest are its arguments verbatim.
+fn exec_child(program: &str, rest: &[String]) {
+    let Ok(prog_c) = CString::new(program) else {
+        return;
+    };
+    let mut argv: Vec<CString> = Vec::with_capacity(rest.len() + 1);
+    argv.push(prog_c.clone());
+    for a in rest {
+        match CString::new(a.as_str()) {
+            Ok(c) => argv.push(c),
+            Err(_) => return,
+        }
+    }
+    let mut ptrs: Vec<*const libc::c_char> = argv.iter().map(|c| c.as_ptr()).collect();
+    ptrs.push(std::ptr::null());
+    unsafe { libc::execvp(prog_c.as_ptr(), ptrs.as_ptr()) };
+}
+
+// ---- daemon-socket client (wrapper sink) -----------------------------------
+
+/// Connect to the daemon, `register-sink`, and stream pushed frames into the
+/// shared state on a background thread. `state` frames update the strip token;
+/// `transcript` frames queue bytes for the proxy loop to inject into the child.
+///
+/// The wrapper sink is purely additive: if the daemon is unreachable the strip
+/// reads `offline` and the proxy keeps working as a passthrough. On a dropped
+/// connection it reconnects (re-registering when the daemon returns).
+fn spawn_sink_client(shared: Arc<Mutex<Shared>>) {
+    std::thread::spawn(move || {
+        let Some(path) = daemon_socket_path() else {
+            set_shared_state(&shared, "offline");
+            return;
+        };
+        loop {
+            if let Ok(mut stream) = UnixStream::connect(&path)
+                && stream.write_all(b"register-sink\n").is_ok()
+            {
+                let reader = BufReader::new(stream);
+                for line in reader.lines() {
+                    let Ok(line) = line else { break };
+                    match Frame::parse(&line) {
+                        Ok(Frame::State(s)) => set_shared_state(&shared, s.as_str()),
+                        Ok(Frame::Transcript(text)) => {
+                            shared
+                                .lock()
+                                .unwrap()
+                                .pending_inject
+                                .extend_from_slice(&injection_bytes(&text));
+                        }
+                        Err(_) => {} // ignore frames we don't understand
+                    }
+                }
+            }
+            // Daemon down or connection dropped: show offline and retry so the
+            // wrapper sink re-registers when the daemon comes back.
+            set_shared_state(&shared, "offline");
+            std::thread::sleep(Duration::from_secs(2));
+        }
+    });
+}
+
+fn set_shared_state(shared: &Arc<Mutex<Shared>>, token: &str) {
+    shared.lock().unwrap().state = token.to_owned();
+}
+
+/// The daemon's control socket, `$XDG_RUNTIME_DIR/ghostty-voice.sock` (matching
+/// the daemon and `ghostty-voice-ctl`).
+fn daemon_socket_path() -> Option<PathBuf> {
+    std::env::var("XDG_RUNTIME_DIR")
+        .ok()
+        .map(|dir| PathBuf::from(dir).join("ghostty-voice.sock"))
+}
+
+/// Paint the status strip onto the real terminal at `strip_row`, showing
+/// `state`. The renderer saves/restores the cursor, so the child is undisturbed.
+fn paint_strip(strip_row: u16, state: &str) {
+    write_all_fd(STDOUT, &strip::render(strip_row, state));
+}
+
+/// Confine scrolling to the child's rows (`1..=child_rows`) via DECSTBM, so a
+/// line-mode child (e.g. a bare shell) can't scroll our strip away. Bracketed
+/// with DECSC/DECRC because DECSTBM homes the cursor. A no-op when the child has
+/// no usable rows. Alt-screen TUIs (the common case) are unaffected either way.
+fn set_scroll_region(child_rows: u16) {
+    if child_rows == 0 {
+        return;
+    }
+    write_all_fd(STDOUT, format!("\x1b7\x1b[1;{child_rows}r\x1b8").as_bytes());
+}
+
+/// Restore the full-screen scroll region on exit.
+fn reset_scroll_region() {
+    write_all_fd(STDOUT, b"\x1b[r");
+}
+
+fn get_winsize(fd: RawFd) -> libc::winsize {
+    // SAFETY: TIOCGWINSZ fills a winsize; zeroed is a valid fallback if it fails
+    // (e.g. fd is not a tty), yielding a 0×0 size the child treats as unknown.
+    let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+    unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut ws) };
+    ws
+}
+
+fn set_winsize(fd: RawFd, ws: &libc::winsize) {
+    unsafe { libc::ioctl(fd, libc::TIOCSWINSZ, ws as *const libc::winsize) };
+}
+
+fn install_sigwinch() {
+    // SAFETY: installing a trivial flag-setting handler for SIGWINCH.
+    unsafe {
+        let mut sa: libc::sigaction = std::mem::zeroed();
+        sa.sa_sigaction = on_sigwinch as usize;
+        libc::sigemptyset(&mut sa.sa_mask);
+        sa.sa_flags = libc::SA_RESTART;
+        libc::sigaction(libc::SIGWINCH, &sa, std::ptr::null_mut());
+    }
+}
+
+/// Write all of `data` to `fd`, retrying short writes. Best-effort: a closed fd
+/// just ends the write (the loop will notice the peer is gone).
+fn write_all_fd(fd: RawFd, mut data: &[u8]) {
+    while !data.is_empty() {
+        let w = unsafe { libc::write(fd, data.as_ptr().cast(), data.len()) };
+        if w <= 0 {
+            break;
+        }
+        data = &data[w as usize..];
+    }
+}
+
+/// RAII raw-mode guard for stdin. Restores the saved termios on drop so the
+/// terminal is always left usable, even on a panic or early exit.
+struct RawGuard {
+    saved: libc::termios,
+}
+
+impl RawGuard {
+    /// Enter raw mode if stdin is a tty; `None` (a no-op guard) otherwise.
+    fn enter() -> Option<Self> {
+        if unsafe { libc::isatty(STDIN) } != 1 {
+            return None;
+        }
+        // SAFETY: tcgetattr fills a termios we then copy + cfmakeraw + set.
+        let mut term: libc::termios = unsafe { std::mem::zeroed() };
+        if unsafe { libc::tcgetattr(STDIN, &mut term) } != 0 {
+            return None;
+        }
+        let saved = term;
+        unsafe {
+            libc::cfmakeraw(&mut term);
+            libc::tcsetattr(STDIN, libc::TCSANOW, &term);
+        }
+        Some(Self { saved })
+    }
+}
+
+impl Drop for RawGuard {
+    fn drop(&mut self) {
+        unsafe { libc::tcsetattr(STDIN, libc::TCSANOW, &self.saved) };
+    }
+}

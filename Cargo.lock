@@ -1236,6 +1236,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "talk-to"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "ghostty-voice-core",
+ "libc",
+]
+
+[[package]]
 name = "tap"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
