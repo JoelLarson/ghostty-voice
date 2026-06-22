@@ -3,11 +3,11 @@ id: TASK-9
 title: >-
   PRD: talk-to — PTY wrapper that injects voice into a wrapped agent (Delivery
   sink, v1)
-status: In Progress
+status: Done
 assignee:
   - claude
 created_date: '2026-06-22 06:36'
-updated_date: '2026-06-22 06:53'
+updated_date: '2026-06-22 07:16'
 labels:
   - needs-triage
   - prd
@@ -106,9 +106,9 @@ SSH works because `talk-to` wraps whatever command it is given; `ssh host claude
 - [ ] #1 End-to-end happy path: with `talk-to ssh host claude` running, pressing the trigger records, transcribes on the desktop GPU, and the Transcript appears in claude's input line over SSH with no trailing Enter and no manual intervention.
 - [ ] #2 Passthrough fidelity: claude's TUI under `talk-to` is visually indistinguishable from launching claude directly, including a terminal resize (child reflows to H-1 rows) and Ctrl-C reaching claude rather than the wrapper.
 - [ ] #3 Status strip: the reserved bottom row reflects daemon state transitions (idle/recording/transcribing) in real time without disturbing claude's rendered region.
-- [ ] #4 Additivity: with no `talk-to` running, dictation behaves exactly as today (focused-window Auto-type via ydotool) and existing tests still pass.
-- [ ] #5 Crash safety: killing `talk-to` before delivery holds the Transcript (recoverable via replay-last) and never types into the newly focused window.
-- [ ] #6 Chicago-style TDD evidence: strip geometry, sink registry, and push-sink protocol have passing unit tests written test-first with no test doubles; delivery routing has a daemon-level integration test mirroring ordered_drain.rs.
+- [x] #4 Additivity: with no `talk-to` running, dictation behaves exactly as today (focused-window Auto-type via ydotool) and existing tests still pass.
+- [x] #5 Crash safety: killing `talk-to` before delivery holds the Transcript (recoverable via replay-last) and never types into the newly focused window.
+- [x] #6 Chicago-style TDD evidence: strip geometry, sink registry, and push-sink protocol have passing unit tests written test-first with no test doubles; delivery routing has a daemon-level integration test mirroring ordered_drain.rs.
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -141,3 +141,38 @@ PTY proxy via libc: forkpty with child winsize `(H-1, W)`, raw-mode stdin (RAII 
 
 AFK execution: slices done sequentially, each fully green before the next; plans recorded per subtask. Demo/manual ACs needing GPU/mic/SSH cannot run in this environment — verified via `cargo test`/`cargo build` + faithful wiring; this limitation is reported honestly at finalization.
 <!-- SECTION:PLAN:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+## talk-to — PTY voice-wrapper (Delivery sink) v1: implemented end to end
+
+All five slices implemented test-first (Chicago-style), `cargo test` green (248 tests), clippy clean, `cargo fmt` clean.
+
+### What shipped
+**New pure modules in `ghostty-voice-core` (unit-tested, no doubles):**
+- `pty.rs` — argv `split_command` (SSH is just a command) + `injection_bytes` (the review-before-Enter invariant: never a trailing newline). 5 tests.
+- `strip.rs` — **Strip geometry** `geometry(rows,cols,strip_height) → child (H-strip, W) + strip_row`, the bottom-strip invariant (origin/width unchanged ⇒ verbatim passthrough, no VT emulator), saturating on degenerate sizes; + the **status-strip renderer** (DECSC → address row → clear → `● state` → DECRC). 8 tests.
+- `sink.rs` — **Sink registry / active Delivery sink**: `ActiveSink{FocusedWindow,Wrapper}`, register→active, deregister/death→focused-window, exactly-one-active, trigger-time binding, and `route(bound) → {FocusedWindow, Wrapper, Held}`. 10 tests.
+- `protocol.rs` — `Command::RegisterSink` + push `Frame{Transcript,State}` encode/parse + `State::parse`; newline-delimited, no JSON (slice-3 decision). 12 tests.
+
+**New crate `crates/talk-to` (binary, libc OS glue):** forkpty + execvp, raw-mode stdin (RAII restore), `poll` verbatim passthrough, SIGWINCH→winsize recompute to (H-1,W), DECSTBM strip protection, bottom strip painted from live daemon state; a socket-client thread registers as a wrapper sink, injects pushed Transcripts into the child PTY with no trailing newline, and reflects pushed state. Connection failure is non-fatal (passthrough still works; strip reads `offline`).
+
+**Daemon (`ghostty-voiced`):** persistent `register-sink` connection path (`serve_sink`) beside the one-shot path; `SinkRegistry` + per-sink push channels + a `watch<State>` broadcast through one `set_state` chokepoint; trigger-time binding (`bindings: seq→ActiveSink`) captured at enqueue; `drain_queue` routes the ready head by its bound sink — focused-window = today's `ydotool` Auto-type gated by the Freshness window (unchanged), wrapper = push `Frame::Transcript` to its PTY (no Freshness, exact target), dead bound wrapper = Held-for-replay (never redirected). Cache-before-deliver preserved.
+
+**Integration tests (`ghostty-voiced/tests/`, real socket + real protocol + real registry/queue/cache, mirroring `ordered_drain.rs`):** `sink_registration.rs` (register→active→pushed frames round-trip→disconnect→focused-window), `wrapper_delivery.rs` (bound wrapper receives the pushed Transcript end-to-end, no trailing newline; no-wrapper→focused-window), `held_for_replay.rs` (wrapper crashes→Held, not redirected; cached transcript recoverable).
+
+### Verified
+- `cargo test --workspace` (248), `cargo clippy --workspace --all-targets` (clean), `cargo fmt --check` (clean).
+- Headless proxy smoke: `talk-to` forwards child output verbatim, passes multi-arg commands, propagates exit codes.
+- **Real daemon binary** (isolated XDG_RUNTIME_DIR): `register-sink` → pushed `state` frame; log shows the wrapper sink becoming the active Delivery sink and the focused-window sink reactivating on disconnect; one-shot `status` still works alongside.
+
+### Acceptance criteria
+- ✅ #4 Additivity (no wrapper → focused-window Auto-type unchanged; all prior tests pass), #5 Crash safety (held_for_replay), #6 Chicago-TDD evidence (3 unit suites + integration mirroring ordered_drain.rs) — all evidenced.
+- ⏳ #1 hands-free spoken text into claude over SSH, #2 passthrough fidelity (live resize + Ctrl-C), #3 strip tracking state live — **fully implemented and wired**, but these require a real terminal + GPU/mic + an SSH host, which are unavailable in this headless environment. They are left for developer demo verification. Recommended checks: `talk-to bash` (resize, Ctrl-C, strip), `talk-to claude`, `talk-to ssh host claude` with the daemon running and a recording trigger.
+
+### Notes
+- Trigger-time binding was implemented from slice 4 (the correct end state), so slice 5 was test/verify-only.
+- Domain language (Delivery sink, focused-window/wrapper sink, Auto-type, Held-for-replay, Replay-last, Freshness window) is used throughout code, tests, and docstrings.
+- Not committed — left as working-tree changes for review (no commit was requested).
+<!-- SECTION:FINAL_SUMMARY:END -->
