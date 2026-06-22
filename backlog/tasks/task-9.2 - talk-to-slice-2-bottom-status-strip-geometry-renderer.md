@@ -1,9 +1,11 @@
 ---
 id: TASK-9.2
 title: 'talk-to slice 2: bottom status strip (geometry + renderer)'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - claude
 created_date: '2026-06-22 06:46'
+updated_date: '2026-06-22 06:57'
 labels:
   - needs-triage
   - talk-to
@@ -49,3 +51,24 @@ task-9.1 (the PTY proxy this builds on).
 - [ ] #4 Tiny/short-terminal edge cases are handled without panic or corruption.
 - [ ] #5 Chicago-style TDD: unit tests written test-first (no doubles) for strip geometry across sizes and edge cases, asserting the (H-1, W)/origin invariant; `cargo test` green.
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+## Slice 2: bottom status strip (geometry + renderer)
+
+### Pure, test-first in ghostty-voice-core (Chicago TDD, no doubles)
+New `strip.rs`:
+- `StripGeometry { child: Winsize{rows,cols}, strip_row: u16 }` (1-based strip_row).
+- `fn geometry(term_rows, term_cols, strip_height) -> StripGeometry`: child winsize = `(rows - strip_height, cols)`, origin unchanged; strip occupies the bottom `strip_height` rows, top strip row = `rows - strip_height + 1`. Load-bearing invariant: cols unchanged (no width change), child origin still (1,1). Edge cases: term too short (rows <= strip_height) → child rows = 0 (caller keeps the child but reserves nothing usable) — never underflow/panic; rows==0/cols==0 handled.
+- **Renderer** `render(state_token: &str) -> Vec<u8>`: ANSI that saves cursor (ESC 7), moves to the strip row col 1, clears line, paints `● <state>`, restores cursor (ESC 8) — never touches the child region. Per PRD the renderer is visual-checked; add ONE light smoke test (targets the right row, contains the token, restores cursor) — kept minimal.
+
+Tests: invariant `(H-strip, W)` + origin across normal/tiny/1-row/zero sizes; strip_row math; no panic on degenerate sizes.
+
+### Wire into talk-to (OS glue)
+- `STRIP_HEIGHT = 1`. Compute child winsize via `strip::geometry` at startup and on SIGWINCH; forkpty/TIOCSWINSZ use the reduced `(H-1, W)`.
+- Set DECSTBM scroll region to rows `1..H-1` so line-mode scrolling can't eat the strip (best-effort; alt-screen TUIs unaffected); reset on resize.
+- Paint a PLACEHOLDER `● idle` after child output each loop iteration and on resize (real daemon state arrives in slice 4).
+
+Validation: `cargo test` green for geometry; headless geometry demo (print computed winsizes). Live visual is demo-only.
+<!-- SECTION:PLAN:END -->
