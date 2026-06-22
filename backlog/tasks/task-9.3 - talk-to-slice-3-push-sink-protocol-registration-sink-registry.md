@@ -1,11 +1,11 @@
 ---
 id: TASK-9.3
 title: 'talk-to slice 3: push-sink protocol + registration + sink registry'
-status: In Progress
+status: Done
 assignee:
   - claude
 created_date: '2026-06-22 06:46'
-updated_date: '2026-06-22 07:01'
+updated_date: '2026-06-22 07:10'
 labels:
   - needs-triage
   - talk-to
@@ -48,11 +48,11 @@ task-9.1 (provides the `talk-to` binary).
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Launching `talk-to` registers a wrapper sink and the daemon reports it as the active sink.
-- [ ] #2 Exiting `talk-to` (or dropping the connection) reactivates the focused-window sink.
-- [ ] #3 At most one sink is active at any moment.
-- [ ] #4 A `register-sink` command and a Transcript push frame round-trip over the control socket.
-- [ ] #5 Chicago-style TDD: test-first unit tests (no doubles) for the protocol parse/encode and the sink-registry lifecycle/active-sink rules; `cargo test` green.
+- [x] #1 Launching `talk-to` registers a wrapper sink and the daemon reports it as the active sink.
+- [x] #2 Exiting `talk-to` (or dropping the connection) reactivates the focused-window sink.
+- [x] #3 At most one sink is active at any moment.
+- [x] #4 A `register-sink` command and a Transcript push frame round-trip over the control socket.
+- [x] #5 Chicago-style TDD: test-first unit tests (no doubles) for the protocol parse/encode and the sink-registry lifecycle/active-sink rules; `cargo test` green.
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -78,3 +78,11 @@ task-9.1 (provides the `talk-to` binary).
 ### Integration test (ghostty-voiced/tests, real socket + real protocol + real registry)
 `sink_registration.rs`: client connects, `register-sink`; server registers (active=Wrapper) + pushes `Frame::Transcript` and `Frame::State`; client parses them back; assert active() is the wrapper while connected and a frame round-trips. Mirrors ordered_drain.rs (real collaborators, doubles only at the socket peer).
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented: protocol `Command::RegisterSink` + `Frame{Transcript,State}` encode/parse + `State::parse` (12 protocol tests); pure `sink::{SinkId,ActiveSink,Route,SinkRegistry}` with register/deregister/active/is_live/route (10 tests). Daemon: `Daemon.sinks/sink_conns/state_tx`, single `set_state` chokepoint broadcasting via watch, `handle_conn` intercepts `register-sink` → persistent `serve_sink` (registers, pushes initial state, select over mpsc transcript frames / watch state changes / EOF detection, deregisters on disconnect). talk-to client thread registers, parses pushed frames → strip state + pending PTY injection (single-writer via Shared).
+
+Verified against the REAL daemon binary (isolated XDG_RUNTIME_DIR): `register-sink` → pushed `state downloading`; log shows 'wrapper sink SinkId(0) registered — now the active Delivery sink' then 'deregistered — focused-window sink reactivated' on disconnect; one-shot `ctl status` still works alongside. Integration test sink_registration.rs (real socket + real Frame + real SinkRegistry, mirrors ordered_drain.rs) green. Full workspace cargo test green; clippy clean. All ACs evidenced.
+<!-- SECTION:NOTES:END -->
