@@ -1,11 +1,11 @@
 ---
 id: TASK-9.5
 title: 'talk-to slice 5: bound target + held-for-replay (crash safety)'
-status: In Progress
+status: Done
 assignee:
   - claude
 created_date: '2026-06-22 06:47'
-updated_date: '2026-06-22 07:14'
+updated_date: '2026-06-22 07:15'
 labels:
   - needs-triage
   - talk-to
@@ -43,11 +43,11 @@ task-9.4 (delivery routing to the active sink).
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A Transcript is bound to the sink that was active when its recording started, not the sink active at delivery time.
-- [ ] #2 Killing `talk-to` before delivery holds the Transcript (Held-for-replay) and `replay-last` recovers it.
-- [ ] #3 Nothing is typed into the newly focused window when the bound wrapper sink has died.
-- [ ] #4 The focused-window sink reactivates after the wrapper disconnects.
-- [ ] #5 Chicago-style TDD: test-first unit tests (no doubles) for trigger-time binding and dead-bound-sink → held, plus integration coverage of the crash path; `cargo test` green.
+- [x] #1 A Transcript is bound to the sink that was active when its recording started, not the sink active at delivery time.
+- [x] #2 Killing `talk-to` before delivery holds the Transcript (Held-for-replay) and `replay-last` recovers it.
+- [x] #3 Nothing is typed into the newly focused window when the bound wrapper sink has died.
+- [x] #4 The focused-window sink reactivates after the wrapper disconnects.
+- [x] #5 Chicago-style TDD: test-first unit tests (no doubles) for trigger-time binding and dead-bound-sink → held, plus integration coverage of the crash path; `cargo test` green.
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -66,3 +66,13 @@ Trigger-time binding + dead-bound-sink→Held are ALREADY implemented in slices 
 ### Verify
 Real-daemon smoke: register a wrapper sink, drop it, confirm the daemon logs deregistration + focused-window reactivation (already shown in slice 3). The full kill-mid-flight→replay-last demo needs GPU/mic and is demo-only; the crash routing + cache recovery is proven by the integration test.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Crash-safety landed across slices 3–4 (trigger-time binding at enqueue; drain routes Route::Held → held-for-replay; serve_sink deregisters a dead wrapper so is_live=false at delivery; focused-window reactivates on disconnect). Slice 5 adds the explicit crash-path coverage.
+
+Evidence: sink.rs unit tests (trigger-time binding snapshot, dead-bound→Held, never-redirected-to-later-wrapper, never-redirected-to-focused-window). New integration test held_for_replay.rs (real socket + real SinkRegistry + real DeliveryQueue + real on-disk cache, mirrors ordered_drain.rs): wrapper registers → bound at trigger → wrapper drops (crash) → deregister → route(bound)==Held (NOT Wrapper, NOT FocusedWindow even though FocusedWindow is now active) → cached transcript recoverable via latest_transcript (what replay-last reads). Real-daemon smoke (slice 3) already showed deregister → focused-window reactivation in the log.
+
+All 5 ACs evidenced by tests; cargo test green (248), clippy clean, fmt clean. The full kill-talk-to-mid-recording → replay-last LIVE demo needs GPU/mic and is demo-only; the routing + cache-recovery guarantee it rests on is proven.
+<!-- SECTION:NOTES:END -->
