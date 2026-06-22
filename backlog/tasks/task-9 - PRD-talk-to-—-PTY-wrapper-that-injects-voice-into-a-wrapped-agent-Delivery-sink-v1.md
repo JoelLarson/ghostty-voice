@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-06-22 06:36'
+updated_date: '2026-06-22 06:41'
 labels:
   - needs-triage
   - prd
@@ -72,7 +73,7 @@ Contracts:
 
 ## Testing Decisions
 
-Good tests assert external behavior, not implementation details. Prior art: inline `#[cfg(test)]` unit tests in `ghostty-voice-core` (`protocol.rs`, `delivery.rs`, `inject.rs`) and daemon integration tests in `ghostty-voiced/tests/` (`ordered_drain.rs`, `accuracy_pipeline.rs`).
+**Chicago-style (classicist) TDD is required.** Every module is driven test-first in red-green-refactor; tests assert observable state/behavior through *real* collaborators rather than mocked interactions. Test doubles appear only at true external boundaries (whisper-server, `ydotool`, the OS PTY, the socket peer) — the deep pure modules use none. Good tests assert external behavior, not implementation details. Prior art: inline `#[cfg(test)]` unit tests in `ghostty-voice-core` (`protocol.rs`, `delivery.rs`, `inject.rs`) and daemon integration tests in `ghostty-voiced/tests/` (`ordered_drain.rs`, `accuracy_pipeline.rs`).
 
 Test these modules (confirmed with developer):
 - **Strip geometry** (unit) — winsize/region math across terminal sizes and edge cases (tiny terminals, 1-row reserve); asserts the `(H-1, W)`/origin invariant.
@@ -81,6 +82,10 @@ Test these modules (confirmed with developer):
 - **Delivery routing** (integration, daemon-level) — a registered wrapper sink receives the pushed Transcript end-to-end; mirrors `ordered_drain.rs`.
 
 Status-strip renderer is verified visually in v1 (pure presentation), not unit-tested.
+
+## Success Validation
+
+The PRD is successful when the acceptance criteria pass — concretely: `talk-to ssh host claude` is launched, claude renders indistinguishably from a direct launch (including resize + Ctrl-C), the bottom strip tracks daemon state live, and pressing the trigger gets spoken text into claude's input line over SSH hands-free with no trailing Enter; with no wrapper running, today's focused-window Auto-type is unchanged; a `talk-to` killed mid-delivery holds the transcript (replay-last recoverable) and never types into the new focus; and all four test suites (three unit, one integration) pass, written test-first per the Chicago-style requirement above.
 
 ## Out of Scope
 
@@ -94,3 +99,13 @@ Deferred — seam kept open, NOT rejected:
 
 SSH works because `talk-to` wraps whatever command it is given; `ssh host claude` is just a command, and injected bytes flow PTY master -> ssh stdin -> remote PTY -> agent stdin over the existing pipe. The strong "deliver to the original target; if it died, hold and ask" guarantee is exact for the wrapper sink (durable PTY identity) and structurally unavailable to the focused-window sink (no compositor introspection). Thinnest tracer-bullet slice for implementation: a bare PTY proxy that forwards verbatim and injects a hardcoded string on a keypress — proves PTY + transparent passthrough + SSH with zero daemon coupling — before any sink wiring. Full design lives in IDEAS.md #4; domain language in CONTEXT.md.
 <!-- SECTION:DESCRIPTION:END -->
+
+## Acceptance Criteria
+<!-- AC:BEGIN -->
+- [ ] #1 End-to-end happy path: with `talk-to ssh host claude` running, pressing the trigger records, transcribes on the desktop GPU, and the Transcript appears in claude's input line over SSH with no trailing Enter and no manual intervention.
+- [ ] #2 Passthrough fidelity: claude's TUI under `talk-to` is visually indistinguishable from launching claude directly, including a terminal resize (child reflows to H-1 rows) and Ctrl-C reaching claude rather than the wrapper.
+- [ ] #3 Status strip: the reserved bottom row reflects daemon state transitions (idle/recording/transcribing) in real time without disturbing claude's rendered region.
+- [ ] #4 Additivity: with no `talk-to` running, dictation behaves exactly as today (focused-window Auto-type via ydotool) and existing tests still pass.
+- [ ] #5 Crash safety: killing `talk-to` before delivery holds the Transcript (recoverable via replay-last) and never types into the newly focused window.
+- [ ] #6 Chicago-style TDD evidence: strip geometry, sink registry, and push-sink protocol have passing unit tests written test-first with no test doubles; delivery routing has a daemon-level integration test mirroring ordered_drain.rs.
+<!-- AC:END -->
