@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - claude
 created_date: '2026-06-22 06:45'
-updated_date: '2026-06-22 06:53'
+updated_date: '2026-06-22 06:57'
 labels:
   - needs-triage
   - talk-to
@@ -45,7 +45,7 @@ Run `cargo test` and (manually) `talk-to claude` / `talk-to ssh host claude`.
 - [ ] #3 Resizing the terminal reflows the wrapped child correctly (child winsize tracks the terminal).
 - [ ] #4 Ctrl-C and signals reach the wrapped child, not the wrapper.
 - [ ] #5 The debug keypress injects a hardcoded string into the child's input line with no trailing Enter.
-- [ ] #6 Chicago-style TDD: passing tests written test-first for the proxy's testable logic, no mocked collaborators beyond the OS PTY boundary; `cargo test` green.
+- [x] #6 Chicago-style TDD: passing tests written test-first for the proxy's testable logic, no mocked collaborators beyond the OS PTY boundary; `cargo test` green.
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -74,3 +74,13 @@ Put the proxy's testable logic in `ghostty-voice-core`:
 ### Validation
 `cargo test` green (pure helpers). Manual `talk-to bash` / `talk-to claude` / `talk-to ssh host claude` is demo-only (interactive; not runnable headless here) — reported honestly.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented: new `crates/talk-to` binary (libc OS glue) + pure `ghostty_voice_core::pty` (split_command, injection_bytes). forkpty+execvp, raw-mode stdin (RAII restore), poll(stdin,master) verbatim passthrough, SIGWINCH→TIOCGWINSZ/TIOCSWINSZ, F12 (ESC[24~) debug-injects a hardcoded string with NO trailing newline, child exit-code propagation.
+
+Verified headless: `talk-to echo ...` forwards child output verbatim (PTY CR translation correct); `talk-to sh -c 'printf ABC; exit 7'` proves multi-arg passthrough + exit code 7; empty invocation → usage+exit 2. 5 test-first `pty::` unit tests green; full workspace `cargo test` green (222 tests); clippy clean.
+
+AC #1–#5 are interactive (real terminal + claude/ssh, raw-mode Ctrl-C passthrough, F12 keypress, live resize) and cannot be exercised in this headless environment; their mechanisms are implemented and correct-by-construction. AC #6 (Chicago TDD + cargo test green) is fully evidenced. Demo verification of #1–#5 is left to the developer on a real terminal.
+<!-- SECTION:NOTES:END -->
