@@ -1,9 +1,11 @@
 ---
 id: TASK-9.3
 title: 'talk-to slice 3: push-sink protocol + registration + sink registry'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - claude
 created_date: '2026-06-22 06:46'
+updated_date: '2026-06-22 07:01'
 labels:
   - needs-triage
   - talk-to
@@ -52,3 +54,27 @@ task-9.1 (provides the `talk-to` binary).
 - [ ] #4 A `register-sink` command and a Transcript push frame round-trip over the control socket.
 - [ ] #5 Chicago-style TDD: test-first unit tests (no doubles) for the protocol parse/encode and the sink-registry lifecycle/active-sink rules; `cargo test` green.
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+## Slice 3: push-sink protocol + registration + sink registry
+
+### Pure, test-first in ghostty-voice-core (no doubles)
+1. `protocol.rs` extension:
+   - `Command::RegisterSink` parsed from `register-sink` (case-insensitive, trimmed).
+   - `Frame { Transcript(String), State(State) }` daemon→client push frames with `encode()`/`parse()`: lines `transcript <text>` (text = remainder of line, internal spaces preserved, newline-free) and `state <token>`. Newline-delimited, no JSON (per slice-3 decision). Round-trip tests.
+2. `sink.rs` (new) — Sink registry / active-sink:
+   - `SinkId(u64)`, `ActiveSink { FocusedWindow, Wrapper(SinkId) }`, `Route { FocusedWindow, Wrapper(SinkId), Held }`.
+   - `SinkRegistry`: `new()` (active=FocusedWindow), `register() -> SinkId` (active=Wrapper(id), monotonic ids), `deregister(id)` (if active was id → FocusedWindow), `active()`, `is_live(id)`.
+   - `route(bound: ActiveSink, &registry) -> Route`: FocusedWindow→FocusedWindow; Wrapper(id)→ live?Wrapper(id):Held.
+   - Tests: register makes wrapper active; deregister reactivates focused-window; exactly-one-active; route live vs dead; trigger-time binding snapshot survives a later registration of a different sink.
+
+### Daemon wiring (ghostty-voiced) — channel proven, real delivery is slice 4
+- `Daemon`: add `sinks: SinkRegistry`, `sink_conns: HashMap<SinkId, mpsc::UnboundedSender<String>>` (pre-encoded frame lines), `state_tx: watch::Sender<State>`; route all state writes through one `set_state_field` setter that also `state_tx.send`s.
+- `handle_conn`: if first line parses to `RegisterSink`, enter persistent path: register sink, insert sender, push initial `state` frame, then `select!` { rx.recv() → write line to socket ; socket read 0/err → break }. On break: deregister + remove sender (focused-window reactivates). Else: existing one-shot path.
+- talk-to client: connect to the daemon socket (XDG_RUNTIME_DIR/ghostty-voice.sock), send `register-sink\n`, spawn a reader thread that parses `Frame`s — `Transcript` → write injection_bytes to master PTY (no newline); `State` → update strip state. Daemon-unreachable is non-fatal (passthrough still works; strip shows offline).
+
+### Integration test (ghostty-voiced/tests, real socket + real protocol + real registry)
+`sink_registration.rs`: client connects, `register-sink`; server registers (active=Wrapper) + pushes `Frame::Transcript` and `Frame::State`; client parses them back; assert active() is the wrapper while connected and a frame round-trips. Mirrors ordered_drain.rs (real collaborators, doubles only at the socket peer).
+<!-- SECTION:PLAN:END -->
