@@ -3,10 +3,11 @@ id: TASK-9
 title: >-
   PRD: talk-to — PTY wrapper that injects voice into a wrapped agent (Delivery
   sink, v1)
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - claude
 created_date: '2026-06-22 06:36'
-updated_date: '2026-06-22 06:41'
+updated_date: '2026-06-22 06:53'
 labels:
   - needs-triage
   - prd
@@ -109,3 +110,34 @@ SSH works because `talk-to` wraps whatever command it is given; `ssh host claude
 - [ ] #5 Crash safety: killing `talk-to` before delivery holds the Transcript (recoverable via replay-last) and never types into the newly focused window.
 - [ ] #6 Chicago-style TDD evidence: strip geometry, sink registry, and push-sink protocol have passing unit tests written test-first with no test doubles; delivery routing has a daemon-level integration test mirroring ordered_drain.rs.
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+## Overall architecture (confirmed against the codebase)
+
+Pure decision logic lives in `ghostty-voice-core` (Chicago-TDD with real objects); `ghostty-voice-io` holds boundary adapters; binaries are thin shells. Newline-delimited line protocol in `protocol.rs`. Delivery flows through `DeliveryQueue` + `delivery::decide` + the daemon's `drain_queue`.
+
+### New pure modules in ghostty-voice-core (TDD, no doubles)
+- `strip.rs` — **Strip geometry**: `(rows, cols, strip_height) -> child winsize (H-strip, W) + strip region`, origin unchanged. The bottom-strip invariant. + **Status-strip renderer** `render(state) -> ANSI bytes` painting the reserved row & restoring cursor (renderer visual-checked per PRD, light smoke test only).
+- `sink.rs` — **Sink registry / active-sink**: `ActiveSink {FocusedWindow, Wrapper(id)}`, register→active, deregister/death→focused-window, exactly-one-active, trigger-time binding snapshot, and `route(bound, registry) -> {FocusedWindow, Wrapper(id), Held}` (dead bound wrapper → Held; focused-window still gated by Freshness window in the daemon).
+- `protocol.rs` extension — `Command::RegisterSink` (`register-sink`); daemon→client `Frame {Transcript(text), State(state)}` with `encode`/`parse` (`transcript <text>`, `state <token>`), newline-delimited, no JSON (per slice-3 decision).
+
+### New crate `crates/talk-to` (binary `talk-to`, OS glue, not unit-tested)
+PTY proxy via libc: forkpty with child winsize `(H-1, W)`, raw-mode stdin (RAII restore), verbatim passthrough, SIGWINCH→TIOCSWINSZ recompute, repaint strip after child output, Ctrl-C reaches child (byte passthrough in raw mode). Socket-client thread: connect daemon socket, `register-sink`, read frames; `transcript` → write to master PTY (NO trailing newline), `state` → repaint strip. libc-only deps.
+
+### Daemon (ghostty-voiced) changes
+- `handle_conn`: detect `register-sink` first line → persistent registered-sink path (mpsc per sink; push frames; on disconnect deregister → focused-window reactivates). State pushed via a `tokio::sync::watch<State>` the daemon updates through one setter.
+- `Daemon`: add `sinks: SinkRegistry`, `sink_conns: HashMap<SinkId, mpsc::Sender>`, `bindings: HashMap<seq, ActiveSink>`, `state_tx: watch::Sender<State>`.
+- Trigger-time binding: capture `sinks.active()` at enqueue (`stop_and_enqueue`, continuous `end_continuous`).
+- `drain_queue`: route head by bound sink — FocusedWindow → today's `type_text` (freshness applies); Wrapper(live) → push `Frame::Transcript` (no freshness); dead bound wrapper → Held-for-replay.
+
+### Tests
+- Unit (core, test-first, no doubles): strip geometry across sizes/edge cases; sink registry lifecycle + route; protocol parse/encode round-trip.
+- Integration (ghostty-voiced/tests, real socket + real protocol + real registry, mirroring ordered_drain.rs): wrapper registers → receives pushed Transcript end-to-end (slice 4); wrapper drops → deregister → route→Held (slice 5).
+
+### Sequencing
+9.1 bare PTY proxy + debug injection → 9.2 strip geometry+renderer → 9.3 protocol+registration+registry → 9.4 delivery routing to active sink → 9.5 trigger-time binding + held-for-replay.
+
+AFK execution: slices done sequentially, each fully green before the next; plans recorded per subtask. Demo/manual ACs needing GPU/mic/SSH cannot run in this environment — verified via `cargo test`/`cargo build` + faithful wiring; this limitation is reported honestly at finalization.
+<!-- SECTION:PLAN:END -->
