@@ -1,9 +1,11 @@
 ---
 id: TASK-9.4
 title: 'talk-to slice 4: delivery routing to the active sink (hands-free happy path)'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - claude
 created_date: '2026-06-22 06:46'
+updated_date: '2026-06-22 07:10'
 labels:
   - needs-triage
   - talk-to
@@ -51,3 +53,25 @@ task-9.2 (status strip) and task-9.3 (push-sink protocol + registry).
 - [ ] #4 The Transcript is cached before delivery is attempted (write-before-deliver preserved).
 - [ ] #5 Chicago-style TDD: a daemon-level integration test (real daemon, no mocks, mirroring ordered_drain.rs) proves a registered wrapper sink receives the pushed Transcript end-to-end; `cargo test` green.
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+## Slice 4: delivery routing to the active sink (hands-free happy path)
+
+Route each drained Transcript to the ACTIVE sink instead of hard-calling ydotool. Trigger-time binding is implemented here (it's the correct end state and keeps slice-5 honest) — utterance binds `sinks.active()` at enqueue.
+
+### Daemon (ghostty-voiced)
+- Add `Daemon.bindings: HashMap<u64, ActiveSink>` (seq → bound sink). Import `ActiveSink, Route`.
+- At enqueue (`stop_and_enqueue` and continuous `end_continuous`): `bindings.insert(seq, sinks.active())`.
+- `drain_queue`: keep `head_delivery(now, window)` for readiness + the focused-window Freshness decision, then route by the bound sink via `sinks.route(bound)`:
+  - `Route::FocusedWindow` → today's `type_text` gated by the freshness `Delivery` (unchanged behavior when no wrapper registered).
+  - `Route::Wrapper(id)` → look up `sink_conns[id]`, send `Frame::Transcript(text).encode()+"\n"` (NO freshness — exact PTY). If the sender is missing (race) → hold.
+  - `Route::Held` → held-for-replay (notify). (Dead-bound-sink fully exercised in slice 5.)
+  - Remove the binding on resolve; also clear bindings in the empty/err resolve paths of `spawn_transcription`.
+- Cache-before-deliver preserved (write transcript to cache before any delivery), unchanged.
+- talk-to already writes received `transcript` frames into the child PTY with no trailing newline (slice 3); the strip already reflects real `state` frames (slice 3 watch). So "strip tracks recording/transcribing live" is already wired — confirm.
+
+### Integration test (ghostty-voiced/tests, real daemon-style composition)
+`wrapper_delivery.rs` mirroring ordered_drain.rs: a real `DeliveryQueue` + real `SinkRegistry` + real socket wrapper peer; enqueue an utterance bound to a registered wrapper, set it ready, drain → assert the wrapper peer receives the exact pushed `transcript <text>` frame end-to-end (no trailing newline in the payload). Also assert: with NO wrapper (bound FocusedWindow), route is FocusedWindow (today's path), and existing tests still pass.
+<!-- SECTION:PLAN:END -->
