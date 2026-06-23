@@ -51,7 +51,10 @@ fn a_bound_wrapper_sink_receives_the_pushed_transcript_end_to_end() {
     let mut reader = BufReader::new(conn.try_clone().unwrap());
     let mut first = String::new();
     reader.read_line(&mut first).unwrap();
-    assert!(matches!(Command::parse(&first), Ok(Command::RegisterSink)));
+    assert!(matches!(
+        Command::parse(&first),
+        Ok(Command::RegisterSink(_))
+    ));
 
     let mut registry = SinkRegistry::new();
     let id = registry.register();

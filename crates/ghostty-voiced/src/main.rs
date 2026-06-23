@@ -27,7 +27,8 @@ use ghostty_voice_core::delivery::Delivery;
 use ghostty_voice_core::gesture::ButtonEvent;
 use ghostty_voice_core::machine::{self, Action};
 use ghostty_voice_core::protocol::{
-    Command, Frame, ProtocolError, Response, SinkKind, State, StatusReport,
+    Command, Frame, PROTOCOL_VERSION, ProtocolError, Response, SinkKind, State, StatusReport,
+    version_compatible,
 };
 use ghostty_voice_core::queue::DeliveryQueue;
 use ghostty_voice_core::sink::{ActiveSink, Route, SinkId, SinkRegistry};
@@ -403,8 +404,26 @@ async fn handle_conn(stream: UnixStream, daemon: Arc<Mutex<Daemon>>) -> Result<(
     reader.read_line(&mut line).await?;
 
     // `register-sink` is the one persistent command: the connection stays open
-    // and the daemon *pushes* frames down it until the client disconnects.
-    if matches!(Command::parse(&line), Ok(Command::RegisterSink)) {
+    // and the daemon *pushes* frames down it until the client disconnects. The
+    // client carries its PROTOCOL_VERSION (task-10.3); an incompatible version is
+    // refused with an explicit `err incompatible …` so `talk-to` can show
+    // `incompatible` rather than a generic offline. A legacy bare register-sink
+    // (no version) is still accepted.
+    if let Ok(Command::RegisterSink(version)) = Command::parse(&line) {
+        if let Some(v) = version
+            && !version_compatible(v, PROTOCOL_VERSION)
+        {
+            warn!(
+                "rejecting wrapper sink: incompatible protocol v{v} (daemon v{PROTOCOL_VERSION})"
+            );
+            let msg = format!(
+                "incompatible protocol version (daemon speaks {PROTOCOL_VERSION}, client sent {v}) — restart/upgrade the daemon"
+            );
+            write_half
+                .write_all(format!("{}\n", Response::Err(msg).encode()).as_bytes())
+                .await?;
+            return Ok(());
+        }
         return serve_sink(reader, write_half, daemon).await;
     }
 

@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use anyhow::{Result, bail};
 use ghostty_voice_core::link::{LinkState, Registration, classify_first_line};
-use ghostty_voice_core::protocol::Frame;
+use ghostty_voice_core::protocol::{Frame, PROTOCOL_VERSION};
 use ghostty_voice_core::pty::{PtyError, injection_bytes, split_command};
 use ghostty_voice_core::strip;
 
@@ -281,10 +281,14 @@ fn exec_child(program: &str, rest: &[String]) {
 ///
 /// The wrapper sink is purely additive: the proxy keeps working as a passthrough
 /// regardless. When the link is down the strip shows a distinct [`LinkState`]
-/// token — `unreachable` (no daemon), `rejected` (daemon refused register-sink,
-/// e.g. an old daemon), or `dropped` (was registered, then EOF) — never a generic
-/// "offline" (task-10.2), and the reason is logged for diagnosis. It reconnects
-/// on a 2 s cadence, re-registering when the daemon returns.
+/// token — `unreachable` (no daemon), `incompatible` (a too-old/version-mismatched
+/// daemon, e.g. a stale daemon after an upgrade), `rejected` (daemon refused for
+/// another reason), or `dropped` (was registered, then EOF) — never a generic
+/// "offline" (task-10.2/10.3), and the reason is logged for diagnosis. It
+/// reconnects on a 2 s cadence, re-registering when the daemon returns.
+///
+/// Registration carries this client's [`PROTOCOL_VERSION`] (`register-sink <v>`)
+/// so the daemon can detect — and the client can report — an incompatible daemon.
 fn spawn_sink_client(shared: Arc<Mutex<Shared>>) {
     std::thread::spawn(move || {
         let Some(path) = daemon_socket_path() else {
@@ -292,13 +296,14 @@ fn spawn_sink_client(shared: Arc<Mutex<Shared>>) {
             log_link("no daemon socket path (XDG_RUNTIME_DIR unset)");
             return;
         };
+        let register = format!("register-sink {PROTOCOL_VERSION}\n");
         loop {
             match UnixStream::connect(&path) {
                 Err(e) => {
                     set_shared_state(&shared, LinkState::Unreachable.token());
                     log_link(&format!("daemon unreachable at {} ({e})", path.display()));
                 }
-                Ok(mut stream) => match stream.write_all(b"register-sink\n") {
+                Ok(mut stream) => match stream.write_all(register.as_bytes()) {
                     Ok(()) => serve_link(&shared, stream),
                     Err(e) => {
                         set_shared_state(&shared, LinkState::Dropped.token());
@@ -331,6 +336,12 @@ fn serve_link(shared: &Arc<Mutex<Shared>>, stream: UnixStream) {
     };
 
     match classify_first_line(&first) {
+        Registration::Incompatible => {
+            set_shared_state(shared, LinkState::Incompatible.token());
+            log_link(&format!(
+                "incompatible daemon (restart/upgrade ghostty-voiced): {first:?}"
+            ));
+        }
         Registration::Rejected => {
             set_shared_state(shared, LinkState::Rejected.token());
             log_link(&format!("daemon rejected register-sink: {first:?}"));

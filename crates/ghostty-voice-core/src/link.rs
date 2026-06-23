@@ -19,9 +19,15 @@ use crate::protocol::Frame;
 pub enum LinkState {
     /// `connect()` failed — no daemon is listening on the control socket.
     Unreachable,
-    /// The daemon answered `register-sink` with an error — it refused the wrapper
-    /// sink (e.g. an old daemon that doesn't understand the command).
+    /// The daemon answered `register-sink` with an error for a reason other than a
+    /// version mismatch — it refused the wrapper sink.
     Rejected,
+    /// The daemon is **version-incompatible**: it refused the versioned
+    /// `register-sink` (a new daemon answering `err incompatible …`), or it is too
+    /// old to understand the command at all (answering `err unknown command …`).
+    /// Distinct from `unreachable` so a stale daemon after an upgrade is legible
+    /// (task-10.3) — the remedy is to restart/upgrade the daemon.
+    Incompatible,
     /// The connection had registered and was then dropped (EOF) — the daemon went
     /// away after a previously-good connection.
     Dropped,
@@ -34,6 +40,7 @@ impl LinkState {
         match self {
             LinkState::Unreachable => "unreachable",
             LinkState::Rejected => "rejected",
+            LinkState::Incompatible => "incompatible",
             LinkState::Dropped => "dropped",
         }
     }
@@ -45,23 +52,33 @@ pub enum Registration {
     /// The daemon accepted us as a wrapper sink — it pushed a [`Frame`] (a `state`
     /// or `transcript` line) rather than a one-shot reply.
     Registered,
-    /// The daemon did not accept us: it replied with a one-shot response (an
-    /// `err`/`ok` line) or something unparseable — an old daemon answers
-    /// `err unknown command: register-sink`.
+    /// The daemon refused us for a **version** reason: an explicit
+    /// `err incompatible …` (a newer/older daemon that speaks the handshake) or an
+    /// `err unknown command …` (an old daemon that errs on the versioned command).
+    Incompatible,
+    /// The daemon refused us for some other reason (any other `err`, or an
+    /// unparseable line).
     Rejected,
 }
 
 /// Classify the daemon's first reply line to `register-sink`.
 ///
 /// A registered wrapper sink receives pushed [`Frame`]s, so a parseable frame
-/// means we are registered; anything else (a one-shot `ok`/`err` reply, or junk)
-/// means the daemon refused us — surfaced as [`LinkState::Rejected`].
+/// means we are registered. Otherwise the daemon answered a one-shot reply: an
+/// `err` mentioning an incompatible version, or an old daemon's
+/// `err unknown command`, is a version mismatch ([`Registration::Incompatible`]);
+/// any other reply is a plain [`Registration::Rejected`].
 pub fn classify_first_line(line: &str) -> Registration {
     if Frame::parse(line).is_ok() {
-        Registration::Registered
-    } else {
-        Registration::Rejected
+        return Registration::Registered;
     }
+    if let Some(message) = line.trim().strip_prefix("err ") {
+        let message = message.trim_start();
+        if message.starts_with("incompatible") || message.starts_with("unknown command") {
+            return Registration::Incompatible;
+        }
+    }
+    Registration::Rejected
 }
 
 #[cfg(test)]
@@ -73,15 +90,17 @@ mod tests {
     fn link_state_tokens_are_distinct_per_failure_mode() {
         assert_eq!(LinkState::Unreachable.token(), "unreachable");
         assert_eq!(LinkState::Rejected.token(), "rejected");
+        assert_eq!(LinkState::Incompatible.token(), "incompatible");
         assert_eq!(LinkState::Dropped.token(), "dropped");
-        // The three must be distinguishable (no collapse into one "offline").
+        // All must be distinguishable (no collapse into one "offline").
         let tokens = [
             LinkState::Unreachable.token(),
             LinkState::Rejected.token(),
+            LinkState::Incompatible.token(),
             LinkState::Dropped.token(),
         ];
         let unique: std::collections::HashSet<_> = tokens.iter().collect();
-        assert_eq!(unique.len(), 3, "every link state needs a distinct token");
+        assert_eq!(unique.len(), 4, "every link state needs a distinct token");
     }
 
     #[test]
@@ -97,10 +116,30 @@ mod tests {
     }
 
     #[test]
-    fn an_error_reply_means_the_daemon_rejected_the_sink() {
-        // An old daemon that doesn't know register-sink answers a one-shot error.
+    fn an_old_daemons_unknown_command_error_is_an_incompatible_version() {
+        // An old daemon that doesn't know the versioned register-sink answers a
+        // one-shot `err unknown command …` — treated as incompatible (the exact
+        // stale-daemon-after-upgrade confusion), not a generic rejection/offline.
         assert_eq!(
-            classify_first_line("err unknown command: register-sink"),
+            classify_first_line("err unknown command: register-sink 1"),
+            Registration::Incompatible,
+        );
+    }
+
+    #[test]
+    fn an_explicit_incompatible_error_is_an_incompatible_version() {
+        assert_eq!(
+            classify_first_line(
+                "err incompatible protocol version (daemon speaks 1, client sent 2)"
+            ),
+            Registration::Incompatible,
+        );
+    }
+
+    #[test]
+    fn another_error_reply_is_a_plain_rejection() {
+        assert_eq!(
+            classify_first_line("err ydotoold unreachable"),
             Registration::Rejected,
         );
     }

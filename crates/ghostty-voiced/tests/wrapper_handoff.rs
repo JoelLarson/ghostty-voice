@@ -27,7 +27,7 @@ fn expect_register(reader: &mut BufReader<UnixStream>) {
     let mut line = String::new();
     reader.read_line(&mut line).unwrap();
     assert!(
-        matches!(Command::parse(&line), Ok(Command::RegisterSink)),
+        matches!(Command::parse(&line), Ok(Command::RegisterSink(_))),
         "expected register-sink, got {line:?}",
     );
 }

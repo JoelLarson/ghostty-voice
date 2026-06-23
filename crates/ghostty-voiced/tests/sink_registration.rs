@@ -47,7 +47,7 @@ fn a_registered_wrapper_sink_becomes_active_and_receives_pushed_frames() {
             "the floor before any wrapper registers"
         );
 
-        if matches!(Command::parse(&first), Ok(Command::RegisterSink)) {
+        if matches!(Command::parse(&first), Ok(Command::RegisterSink(_))) {
             let id = registry.register();
             // Exactly one active sink, and it is now the wrapper.
             tx.send(registry.active() == ActiveSink::Wrapper(id))

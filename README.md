@@ -157,10 +157,18 @@ the `[input]` section of your config and restart the daemon.
 - **Dropped characters** — raise `[inject].key_delay_ms`.
 - **`talk-to` strip shows a connection problem** — the bottom strip shows the daemon voice
   state (`idle`/`recording`/`transcribing`) while the wrapper sink is registered, otherwise a
-  distinct link token: `unreachable` (no daemon — start/enable `ghostty-voiced`), `rejected`
-  (the daemon refused registration), or `dropped` (a previously-good connection ended — the
-  daemon stopped or restarted). `talk-to` keeps working as a plain passthrough regardless, and
-  logs the reason to `~/.local/state/ghostty-voice/talk-to.log` (`$XDG_STATE_HOME` if set).
+  distinct link token:
+  - `unreachable` — no daemon is listening; start/enable `ghostty-voiced`.
+  - `incompatible` — the daemon speaks a different (usually older) control-protocol version, so
+    it refused the wrapper-sink registration. **This is the classic "stale daemon after a
+    package upgrade"**: the on-disk binary is new but the running daemon is the old one. Remedy:
+    `systemctl --user restart ghostty-voiced` (or upgrade the daemon). It is reported as
+    `incompatible`, never as `unreachable`, so you can tell the two apart.
+  - `rejected` — the daemon refused registration for some other reason.
+  - `dropped` — a previously-good connection ended (the daemon stopped or restarted).
+
+  `talk-to` keeps working as a plain passthrough regardless, and logs the reason to
+  `~/.local/state/ghostty-voice/talk-to.log` (`$XDG_STATE_HOME` if set).
 
 ## Status
 

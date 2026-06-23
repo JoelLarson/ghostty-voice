@@ -65,7 +65,10 @@ fn a_transcript_bound_to_a_dead_wrapper_is_held_and_recoverable_not_redirected()
     let mut reader = BufReader::new(conn.try_clone().unwrap());
     let mut first = String::new();
     reader.read_line(&mut first).unwrap();
-    assert!(matches!(Command::parse(&first), Ok(Command::RegisterSink)));
+    assert!(matches!(
+        Command::parse(&first),
+        Ok(Command::RegisterSink(_))
+    ));
 
     let mut registry = SinkRegistry::new();
     let id = registry.register();

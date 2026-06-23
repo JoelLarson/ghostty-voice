@@ -4,6 +4,20 @@
 //! line: `ok <state>` or `err <message>`. Deliberately dumb-simple — no JSON
 //! until a field actually needs it.
 
+/// The control-socket protocol version, exchanged at `register-sink` time so a
+/// `talk-to` **wrapper sink** can tell an *incompatible* daemon apart from an
+/// unreachable one (task-10.3). Bump this whenever the wrapper-sink wire contract
+/// (the `register-sink` handshake or the pushed [`Frame`]s) changes incompatibly.
+pub const PROTOCOL_VERSION: u32 = 1;
+
+/// Is a client speaking protocol `client` compatible with a daemon speaking
+/// `daemon`? Versions must match exactly — a mismatch in either direction means
+/// the wrapper-sink wire contract differs, so the client should report
+/// `incompatible` and the daemon should refuse the registration.
+pub fn version_compatible(client: u32, daemon: u32) -> bool {
+    client == daemon
+}
+
 /// A command sent by `ghostty-voice-ctl` to the daemon (S2 subset).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
@@ -23,7 +37,11 @@ pub enum Command {
     /// #4). Unlike every other command this does not get a one-shot reply: the
     /// connection stays open and the daemon *pushes* [`Frame`]s down it until the
     /// client disconnects, at which point the focused-window sink reactivates.
-    RegisterSink,
+    ///
+    /// Carries the client's [`PROTOCOL_VERSION`] (`register-sink <version>`) so an
+    /// incompatible daemon can be detected (task-10.3). `None` is a legacy bare
+    /// `register-sink` (a pre-handshake `talk-to`), which the daemon still accepts.
+    RegisterSink(Option<u32>),
 }
 
 /// The daemon's observable state. `Downloading` is the first-run window while
@@ -56,9 +74,24 @@ pub enum ProtocolError {
 
 impl Command {
     /// Parse one request line (whitespace-trimmed, case-insensitive).
+    ///
+    /// `register-sink` may carry an optional protocol version
+    /// (`register-sink <version>`); every other command is an exact word.
     pub fn parse(line: &str) -> Result<Command, ProtocolError> {
         let word = line.trim();
-        match word.to_ascii_lowercase().as_str() {
+        let lower = word.to_ascii_lowercase();
+        // register-sink optionally carries the client's PROTOCOL_VERSION.
+        if let Some(rest) = lower.strip_prefix("register-sink") {
+            let rest = rest.trim();
+            if rest.is_empty() {
+                return Ok(Command::RegisterSink(None));
+            }
+            return rest
+                .parse::<u32>()
+                .map(|v| Command::RegisterSink(Some(v)))
+                .map_err(|_| ProtocolError::UnknownCommand(word.to_owned()));
+        }
+        match lower.as_str() {
             "toggle" => Ok(Command::Toggle),
             "vad" => Ok(Command::Vad),
             "continuous" => Ok(Command::Continuous),
@@ -66,7 +99,6 @@ impl Command {
             "status" => Ok(Command::Status),
             "reload" => Ok(Command::Reload),
             "replay-last" => Ok(Command::ReplayLast),
-            "register-sink" => Ok(Command::RegisterSink),
             _ => Err(ProtocolError::UnknownCommand(word.to_owned())),
         }
     }
@@ -280,15 +312,40 @@ mod tests {
     // ---- push-sink protocol (slice 3) -----------------------------------
 
     #[test]
-    fn parses_register_sink_command() {
+    fn parses_a_bare_register_sink_as_a_legacy_no_version_registration() {
         assert_eq!(
             Command::parse("register-sink").unwrap(),
-            Command::RegisterSink
+            Command::RegisterSink(None)
         );
         assert_eq!(
             Command::parse(" REGISTER-SINK \n").unwrap(),
-            Command::RegisterSink
+            Command::RegisterSink(None)
         );
+    }
+
+    #[test]
+    fn parses_register_sink_with_a_protocol_version() {
+        assert_eq!(
+            Command::parse("register-sink 1").unwrap(),
+            Command::RegisterSink(Some(1)),
+        );
+        assert_eq!(
+            Command::parse(&format!("register-sink {PROTOCOL_VERSION}")).unwrap(),
+            Command::RegisterSink(Some(PROTOCOL_VERSION)),
+        );
+    }
+
+    #[test]
+    fn register_sink_with_a_non_numeric_version_is_an_error() {
+        assert!(Command::parse("register-sink twelve").is_err());
+    }
+
+    #[test]
+    fn version_compatibility_requires_an_exact_match() {
+        assert!(version_compatible(PROTOCOL_VERSION, PROTOCOL_VERSION));
+        assert!(version_compatible(1, 1));
+        assert!(!version_compatible(0, 1), "an older client is incompatible");
+        assert!(!version_compatible(2, 1), "a newer client is incompatible");
     }
 
     #[test]
