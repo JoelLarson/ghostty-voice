@@ -407,12 +407,9 @@ fn link_log_path() -> Option<PathBuf> {
         .map(|home| PathBuf::from(home).join(".local/state/ghostty-voice/talk-to.log"))
 }
 
-/// The daemon's control socket, `$XDG_RUNTIME_DIR/ghostty-voice.sock` (matching
-/// the daemon and `ghostty-voice-ctl`).
+/// The daemon's control socket (matching the daemon and `ghostty-voice-ctl`).
 fn daemon_socket_path() -> Option<PathBuf> {
-    std::env::var("XDG_RUNTIME_DIR")
-        .ok()
-        .map(|dir| PathBuf::from(dir).join("ghostty-voice.sock"))
+    ghostty_voice_core::config::socket_path()
 }
 
 /// Paint the status strip onto the real terminal at `strip_row`, showing

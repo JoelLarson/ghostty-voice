@@ -1344,8 +1344,7 @@ async fn set_state(daemon: &Arc<Mutex<Daemon>>, state: State) {
 }
 
 fn config_path() -> Result<PathBuf> {
-    let home = std::env::var("HOME").context("HOME is not set")?;
-    Ok(PathBuf::from(home).join(".config/ghostty-voice/config.toml"))
+    ghostty_voice_core::config::config_path().context("HOME is not set")
 }
 
 fn load_config(path: &std::path::Path) -> Config {
@@ -1362,8 +1361,7 @@ fn load_config(path: &std::path::Path) -> Config {
 }
 
 fn socket_path() -> Result<PathBuf> {
-    let dir = std::env::var("XDG_RUNTIME_DIR").context("XDG_RUNTIME_DIR is not set")?;
-    Ok(PathBuf::from(dir).join("ghostty-voice.sock"))
+    ghostty_voice_core::config::socket_path().context("XDG_RUNTIME_DIR is not set")
 }
 
 /// `$XDG_CACHE_HOME/ghostty-voice/` (falling back to `~/.cache/...`).

@@ -42,20 +42,41 @@ impl RawKeyEvent {
     }
 }
 
+/// One bit per physical modifier key, tracked individually so releasing one key
+/// of a left/right pair keeps the modifier active while the other is still down.
+mod modbit {
+    pub const LEFT_SHIFT: u8 = 1 << 0;
+    pub const RIGHT_SHIFT: u8 = 1 << 1;
+    pub const LEFT_CTRL: u8 = 1 << 2;
+    pub const RIGHT_CTRL: u8 = 1 << 3;
+    pub const LEFT_ALT: u8 = 1 << 4;
+    pub const RIGHT_ALT: u8 = 1 << 5;
+    pub const SHIFT: u8 = LEFT_SHIFT | RIGHT_SHIFT;
+    pub const CTRL: u8 = LEFT_CTRL | RIGHT_CTRL;
+    pub const ALT: u8 = LEFT_ALT | RIGHT_ALT;
+}
+
+/// The modifier-key bit for `code`, or `None` if it is not a modifier key.
+fn modifier_bit(code: u16) -> Option<u8> {
+    Some(match code {
+        codes::KEY_LEFTSHIFT => modbit::LEFT_SHIFT,
+        codes::KEY_RIGHTSHIFT => modbit::RIGHT_SHIFT,
+        codes::KEY_LEFTCTRL => modbit::LEFT_CTRL,
+        codes::KEY_RIGHTCTRL => modbit::RIGHT_CTRL,
+        codes::KEY_LEFTALT => modbit::LEFT_ALT,
+        codes::KEY_RIGHTALT => modbit::RIGHT_ALT,
+        _ => return None,
+    })
+}
+
 /// Tracks modifier state and per-button press timing, turning raw key events
 /// into [`ButtonEvent`]s for the two configured combos.
 #[derive(Debug, Clone)]
 pub struct KeyTracker {
     start: KeyCombo,
     stop: KeyCombo,
-    // Held modifier keys (left/right of each), so releasing one of a pair keeps
-    // the modifier active while the other is still down.
-    left_shift: bool,
-    right_shift: bool,
-    left_ctrl: bool,
-    right_ctrl: bool,
-    left_alt: bool,
-    right_alt: bool,
+    /// Bitmask of currently-held modifier keys (see [`modbit`]).
+    held_mods: u8,
     // When each button's main key went down (if currently down), to measure hold.
     start_down_at: Option<Duration>,
     stop_down_at: Option<Duration>,
@@ -67,12 +88,7 @@ impl KeyTracker {
         KeyTracker {
             start,
             stop,
-            left_shift: false,
-            right_shift: false,
-            left_ctrl: false,
-            right_ctrl: false,
-            left_alt: false,
-            right_alt: false,
+            held_mods: 0,
             start_down_at: None,
             stop_down_at: None,
         }
@@ -81,25 +97,23 @@ impl KeyTracker {
     /// Current modifier state derived from held left/right modifier keys.
     fn modifiers(&self) -> Modifiers {
         Modifiers {
-            shift: self.left_shift || self.right_shift,
-            ctrl: self.left_ctrl || self.right_ctrl,
-            alt: self.left_alt || self.right_alt,
+            shift: self.held_mods & modbit::SHIFT != 0,
+            ctrl: self.held_mods & modbit::CTRL != 0,
+            alt: self.held_mods & modbit::ALT != 0,
         }
     }
 
     /// Update held-modifier state if `ev` is a modifier key; returns true if it
     /// was a modifier (and therefore not a combo trigger).
     fn track_modifier(&mut self, ev: RawKeyEvent) -> bool {
-        let slot = match ev.code {
-            codes::KEY_LEFTSHIFT => &mut self.left_shift,
-            codes::KEY_RIGHTSHIFT => &mut self.right_shift,
-            codes::KEY_LEFTCTRL => &mut self.left_ctrl,
-            codes::KEY_RIGHTCTRL => &mut self.right_ctrl,
-            codes::KEY_LEFTALT => &mut self.left_alt,
-            codes::KEY_RIGHTALT => &mut self.right_alt,
-            _ => return false,
+        let Some(bit) = modifier_bit(ev.code) else {
+            return false;
         };
-        *slot = ev.pressed;
+        if ev.pressed {
+            self.held_mods |= bit;
+        } else {
+            self.held_mods &= !bit;
+        }
         true
     }
 

@@ -74,13 +74,12 @@ impl DeliveryQueue {
     }
 
     /// The head utterance ready to type *now*, or `None` if the head is still
-    /// pending (strict order — never skip ahead) or the queue is empty.
+    /// pending (strict order — never skip ahead) or the queue is empty. The
+    /// freshness-aware [`Self::head_delivery`] is what the daemon drains by; this
+    /// is the decision-free view (delegating to it) used by tests.
     pub fn next_to_type(&self) -> Option<(u64, &str)> {
-        let head = self.items.front()?;
-        match &head.state {
-            ItemState::Ready(transcript) => Some((head.seq, transcript)),
-            ItemState::Pending => None,
-        }
+        self.head_delivery(Duration::ZERO, Duration::MAX)
+            .map(|(seq, transcript, _)| (seq, transcript))
     }
 
     /// The head utterance ready to type *now*, with its freshness-based

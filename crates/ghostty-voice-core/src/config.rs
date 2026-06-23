@@ -226,6 +226,20 @@ impl Config {
     }
 }
 
+/// The daemon's control socket, `$XDG_RUNTIME_DIR/ghostty-voice.sock`. Shared by
+/// the daemon (which binds it) and every client (`ghostty-voice-ctl`, `talk-to`),
+/// so the path contract lives in one place. `None` if `XDG_RUNTIME_DIR` is unset.
+pub fn socket_path() -> Option<PathBuf> {
+    std::env::var_os("XDG_RUNTIME_DIR").map(|dir| PathBuf::from(dir).join("ghostty-voice.sock"))
+}
+
+/// The user config file, `$HOME/.config/ghostty-voice/config.toml`. `None` if
+/// `HOME` is unset.
+pub fn config_path() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .map(|home| PathBuf::from(home).join(".config/ghostty-voice/config.toml"))
+}
+
 /// Expand a leading `~` or `~/...` to `home`. Paths without a leading tilde
 /// (and `~user` forms, which name a different home) are returned unchanged.
 /// `home` is injected so this stays pure and testable.

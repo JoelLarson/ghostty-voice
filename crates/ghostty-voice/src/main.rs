@@ -28,11 +28,10 @@ struct Cli {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let home = PathBuf::from(std::env::var("HOME").context("HOME is not set")?);
-
-    let config_path = cli
-        .config
-        .unwrap_or_else(|| home.join(".config/ghostty-voice/config.toml"));
+    let config_path = match cli.config {
+        Some(path) => path,
+        None => ghostty_voice_core::config::config_path().context("HOME is not set")?,
+    };
     let cfg = load_config(&config_path)?;
 
     let wav = std::env::temp_dir().join("ghostty-voice-s1.wav");

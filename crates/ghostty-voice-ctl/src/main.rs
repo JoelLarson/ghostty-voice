@@ -62,8 +62,7 @@ impl Cmd {
 }
 
 fn socket_path() -> Result<PathBuf> {
-    let dir = std::env::var("XDG_RUNTIME_DIR").context("XDG_RUNTIME_DIR is not set")?;
-    Ok(PathBuf::from(dir).join("ghostty-voice.sock"))
+    ghostty_voice_core::config::socket_path().context("XDG_RUNTIME_DIR is not set")
 }
 
 /// Send one command word to the daemon socket and return its reply line.
@@ -143,8 +142,7 @@ fn in_group(group: &str) -> bool {
 }
 
 fn config_path() -> Result<PathBuf> {
-    let home = std::env::var("HOME").context("HOME is not set")?;
-    Ok(PathBuf::from(home).join(".config/ghostty-voice/config.toml"))
+    ghostty_voice_core::config::config_path().context("HOME is not set")
 }
 
 /// Load config (defaults if missing/invalid) — used by `doctor` to find the
