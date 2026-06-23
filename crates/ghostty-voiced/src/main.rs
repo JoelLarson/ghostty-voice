@@ -262,7 +262,7 @@ async fn ensure_model_present(daemon: &Arc<Mutex<Daemon>>) {
         return; // already present — straight to Loading
     }
 
-    set_state(daemon, State::Downloading).await;
+    set_state(daemon, State::Downloading(None)).await;
     info!(
         "model not found at {} — first-run download",
         model.display()

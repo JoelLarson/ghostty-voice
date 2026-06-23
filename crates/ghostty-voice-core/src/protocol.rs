@@ -49,10 +49,14 @@ pub enum Command {
 /// model loads into VRAM, which in turn precedes `Idle` (ready).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
-    /// First-run model download in progress. Distinct from `Loading`:
-    /// nothing is in VRAM yet, the fetch is on the network, and it can take
-    /// minutes. Like `Loading`, only `status` is answered while downloading.
-    Downloading,
+    /// First-run model download in progress, carrying the whole-percent complete:
+    /// `None` while the percent is unknown (no `Content-Length` yet), `Some(p)`
+    /// once `p`% has streamed in. Distinct from `Loading`: nothing is in VRAM yet,
+    /// the fetch is on the network, and it can take minutes. Like `Loading`, only
+    /// `status` is answered while downloading. The percent lives here so both the
+    /// wrapper-sink `Frame::State` push and the `StatusReport` serialize it from
+    /// one source of truth.
+    Downloading(Option<u8>),
     Loading,
     Idle,
     Recording,
@@ -105,26 +109,60 @@ impl Command {
 }
 
 impl State {
-    /// The wire token for this state.
-    pub fn as_str(&self) -> &'static str {
+    /// Encode this state as its wire token(s). Every state is a single word
+    /// except a `Downloading(Some(p))`, which is the two-token `downloading <p>`
+    /// — the percent folded onto the deliberately-dumb line protocol, additive
+    /// and backward-compatible with a bare `downloading`.
+    pub fn encode_token(&self) -> String {
         match self {
-            State::Downloading => "downloading",
-            State::Loading => "loading",
-            State::Idle => "idle",
-            State::Recording => "recording",
-            State::Transcribing => "transcribing",
+            State::Downloading(None) => "downloading".to_owned(),
+            State::Downloading(Some(pct)) => format!("downloading {pct}"),
+            State::Loading => "loading".to_owned(),
+            State::Idle => "idle".to_owned(),
+            State::Recording => "recording".to_owned(),
+            State::Transcribing => "transcribing".to_owned(),
         }
     }
 
-    /// Parse a wire token back into a state (inverse of [`State::as_str`]).
+    /// Parse a wire state substring back into a state (inverse of
+    /// [`State::encode_token`]). Accepts the whole state substring so the
+    /// two-token `downloading 42` reconstructs its percent; a bare `downloading`
+    /// is the percent-unknown phase (backward-compatible with an older daemon). A
+    /// percent over 100, a non-numeric percent, or any trailing tokens are
+    /// malformed and return `None`.
     pub fn parse(token: &str) -> Option<State> {
-        match token {
-            "downloading" => Some(State::Downloading),
-            "loading" => Some(State::Loading),
-            "idle" => Some(State::Idle),
-            "recording" => Some(State::Recording),
-            "transcribing" => Some(State::Transcribing),
+        let mut parts = token.split_whitespace();
+        let head = parts.next()?;
+        let rest = parts.next();
+        // No state word takes more than two tokens.
+        if parts.next().is_some() {
+            return None;
+        }
+        match (head, rest) {
+            ("downloading", None) => Some(State::Downloading(None)),
+            ("downloading", Some(p)) => {
+                let pct: u8 = p.parse().ok()?;
+                (pct <= 100).then_some(State::Downloading(Some(pct)))
+            }
+            ("loading", None) => Some(State::Loading),
+            ("idle", None) => Some(State::Idle),
+            ("recording", None) => Some(State::Recording),
+            ("transcribing", None) => Some(State::Transcribing),
             _ => None,
+        }
+    }
+
+    /// The human-readable label for the status strip. Mirrors the wire token but
+    /// renders the download percent as `downloading 42%` (a bare `downloading`
+    /// for the percent-unknown phase), and the plain word for every other state.
+    pub fn label(&self) -> String {
+        match self {
+            State::Downloading(None) => "downloading".to_owned(),
+            State::Downloading(Some(pct)) => format!("downloading {pct}%"),
+            State::Loading => "loading".to_owned(),
+            State::Idle => "idle".to_owned(),
+            State::Recording => "recording".to_owned(),
+            State::Transcribing => "transcribing".to_owned(),
         }
     }
 }
@@ -150,7 +188,7 @@ impl Frame {
     pub fn encode(&self) -> String {
         match self {
             Frame::Transcript(text) => format!("transcript {text}"),
-            Frame::State(state) => format!("state {}", state.as_str()),
+            Frame::State(state) => format!("state {}", state.encode_token()),
         }
     }
 
@@ -176,7 +214,7 @@ impl Response {
     /// Encode as a single response line (no trailing newline).
     pub fn encode(&self) -> String {
         match self {
-            Response::Ok(state) => format!("ok {}", state.as_str()),
+            Response::Ok(state) => format!("ok {}", state.encode_token()),
             Response::Err(message) => format!("err {message}"),
         }
     }
@@ -230,7 +268,7 @@ impl StatusReport {
     pub fn encode(&self) -> String {
         format!(
             "ok {} sink={} wrappers={}",
-            self.state.as_str(),
+            self.state.encode_token(),
             self.active_sink.as_str(),
             self.wrapper_count,
         )
@@ -241,11 +279,21 @@ impl StatusReport {
     /// from an older daemon defaults to the focused-window sink / 0 wrappers).
     /// Returns `None` for an `err` line, an unknown state, or a malformed line.
     pub fn parse(line: &str) -> Option<StatusReport> {
-        let mut tokens = line.split_whitespace();
+        let mut tokens = line.split_whitespace().peekable();
         if tokens.next()? != "ok" {
             return None;
         }
-        let state = State::parse(tokens.next()?)?;
+        // Isolate the state substring: the tokens after `ok` up to the first
+        // `sink=`/`wrappers=` field. The state may be two tokens (`downloading 42`),
+        // so it can't be read as a single token.
+        let mut state_tokens: Vec<&str> = Vec::new();
+        while let Some(token) = tokens.peek() {
+            if token.starts_with("sink=") || token.starts_with("wrappers=") {
+                break;
+            }
+            state_tokens.push(tokens.next()?);
+        }
+        let state = State::parse(&state_tokens.join(" "))?;
         let mut active_sink = SinkKind::FocusedWindow;
         let mut wrapper_count = 0usize;
         for token in tokens {
@@ -292,12 +340,59 @@ mod tests {
     }
 
     #[test]
-    fn states_render_as_tokens() {
-        assert_eq!(State::Downloading.as_str(), "downloading");
-        assert_eq!(State::Loading.as_str(), "loading");
-        assert_eq!(State::Idle.as_str(), "idle");
-        assert_eq!(State::Recording.as_str(), "recording");
-        assert_eq!(State::Transcribing.as_str(), "transcribing");
+    fn states_render_as_wire_tokens() {
+        assert_eq!(State::Downloading(None).encode_token(), "downloading");
+        assert_eq!(
+            State::Downloading(Some(42)).encode_token(),
+            "downloading 42"
+        );
+        assert_eq!(State::Loading.encode_token(), "loading");
+        assert_eq!(State::Idle.encode_token(), "idle");
+        assert_eq!(State::Recording.encode_token(), "recording");
+        assert_eq!(State::Transcribing.encode_token(), "transcribing");
+    }
+
+    #[test]
+    fn downloading_token_round_trips_with_and_without_a_percent() {
+        // The percent is folded into the Downloading state, so a `downloading 42`
+        // token reconstructs the exact percent and a bare `downloading` is the
+        // percent-unknown (no Content-Length yet) phase.
+        for state in [
+            State::Downloading(None),
+            State::Downloading(Some(0)),
+            State::Downloading(Some(42)),
+            State::Downloading(Some(100)),
+        ] {
+            assert_eq!(State::parse(&state.encode_token()), Some(state));
+        }
+    }
+
+    #[test]
+    fn a_bare_downloading_token_is_backward_compatible() {
+        // An older daemon emits a bare `downloading` with no percent; the richer
+        // parser must still accept it as the percent-unknown phase.
+        assert_eq!(State::parse("downloading"), Some(State::Downloading(None)));
+    }
+
+    #[test]
+    fn a_downloading_token_with_a_bogus_percent_does_not_parse() {
+        assert_eq!(
+            State::parse("downloading 101"),
+            None,
+            "over 100% is malformed"
+        );
+        assert_eq!(State::parse("downloading huge"), None);
+        assert_eq!(State::parse("downloading 42 extra"), None);
+    }
+
+    #[test]
+    fn states_render_human_labels_including_the_percent_form() {
+        assert_eq!(State::Downloading(Some(42)).label(), "downloading 42%");
+        assert_eq!(State::Downloading(None).label(), "downloading");
+        assert_eq!(State::Loading.label(), "loading");
+        assert_eq!(State::Idle.label(), "idle");
+        assert_eq!(State::Recording.label(), "recording");
+        assert_eq!(State::Transcribing.label(), "transcribing");
     }
 
     #[test]
@@ -351,13 +446,14 @@ mod tests {
     #[test]
     fn states_round_trip_through_their_wire_token() {
         for state in [
-            State::Downloading,
+            State::Downloading(None),
+            State::Downloading(Some(7)),
             State::Loading,
             State::Idle,
             State::Recording,
             State::Transcribing,
         ] {
-            assert_eq!(State::parse(state.as_str()), Some(state));
+            assert_eq!(State::parse(&state.encode_token()), Some(state));
         }
         assert_eq!(State::parse("bogus"), None);
     }
@@ -374,10 +470,30 @@ mod tests {
 
     #[test]
     fn state_frame_round_trips_for_each_state() {
-        for state in [State::Idle, State::Recording, State::Transcribing] {
+        for state in [
+            State::Idle,
+            State::Recording,
+            State::Transcribing,
+            State::Downloading(None),
+            State::Downloading(Some(42)),
+        ] {
             let frame = Frame::State(state);
             assert_eq!(Frame::parse(&frame.encode()), Ok(frame));
         }
+    }
+
+    #[test]
+    fn a_pushed_downloading_percent_frame_encodes_and_parses() {
+        // The wrapper-sink strip learns the download percent through the same
+        // `state` frame mechanism as every other State — `downloading 42` on the
+        // wire, two tokens after `state`.
+        let frame = Frame::State(State::Downloading(Some(42)));
+        assert_eq!(frame.encode(), "state downloading 42");
+        assert_eq!(Frame::parse("state downloading 42"), Ok(frame));
+        assert_eq!(
+            Frame::parse("state downloading"),
+            Ok(Frame::State(State::Downloading(None))),
+        );
     }
 
     #[test]
@@ -450,6 +566,47 @@ mod tests {
         ] {
             assert_eq!(StatusReport::parse(&report.encode()), Some(report));
         }
+    }
+
+    #[test]
+    fn status_report_carries_a_downloading_percent_alongside_the_sink_fields() {
+        // The two-token `downloading 42` state must round-trip next to the
+        // `sink=`/`wrappers=` fields — the parser isolates the state substring
+        // (tokens after `ok` up to the first `sink=`/`wrappers=`).
+        let report = StatusReport {
+            state: State::Downloading(Some(42)),
+            active_sink: SinkKind::Wrapper,
+            wrapper_count: 1,
+        };
+        assert_eq!(report.encode(), "ok downloading 42 sink=wrapper wrappers=1");
+        assert_eq!(StatusReport::parse(&report.encode()), Some(report));
+
+        // The percent-unknown phase is a single state token.
+        let report = StatusReport {
+            state: State::Downloading(None),
+            active_sink: SinkKind::FocusedWindow,
+            wrapper_count: 0,
+        };
+        assert_eq!(
+            report.encode(),
+            "ok downloading sink=focused-window wrappers=0"
+        );
+        assert_eq!(StatusReport::parse(&report.encode()), Some(report));
+    }
+
+    #[test]
+    fn status_report_parse_accepts_a_bare_ok_downloading_percent() {
+        // A pre-sink daemon could answer `ok downloading 42` with no sink suffix;
+        // the richer parse still isolates the two-token state and defaults the
+        // sink fields.
+        assert_eq!(
+            StatusReport::parse("ok downloading 42"),
+            Some(StatusReport {
+                state: State::Downloading(Some(42)),
+                active_sink: SinkKind::FocusedWindow,
+                wrapper_count: 0,
+            }),
+        );
     }
 
     #[test]
