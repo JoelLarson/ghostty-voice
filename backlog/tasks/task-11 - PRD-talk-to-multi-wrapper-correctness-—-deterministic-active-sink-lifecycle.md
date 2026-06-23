@@ -1,9 +1,10 @@
 ---
 id: TASK-11
 title: 'PRD: talk-to multi-wrapper correctness — deterministic active-sink lifecycle'
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-06-22 23:25'
+updated_date: '2026-06-23 04:04'
 labels:
   - prd
   - talk-to
