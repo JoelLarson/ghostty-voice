@@ -136,6 +136,70 @@ the `[input]` section of your config and restart the daemon.
 - **Disable / free the 16 GB VRAM**: `systemctl --user stop ghostty-voiced` (cascades to
   whisper-server).
 
+## `talk-to` — drive a single agent (wrapper sink)
+
+By default the daemon delivers each **Transcript** to the **focused-window sink**: it
+**Auto-types** into whatever window is focused via `ydotool` (gated by the **Freshness
+window**). `talk-to <command>` instead wraps one agent on a pseudo-terminal and registers a
+**wrapper sink**, so your dictation is **Auto-typed** straight into *that* agent's PTY — a known
+pipe, no "wrong-window" risk, no Freshness window — with no trailing Enter (you still review and
+press Enter). SSH is just a command:
+
+```sh
+talk-to claude
+talk-to ssh host claude
+```
+
+Exactly **one Delivery sink is active** at a time. Launching `talk-to` makes its wrapper sink the
+active sink; exiting it returns to the focused-window sink. With no `talk-to` running, dictation
+behaves exactly as before (focused-window **Auto-type**) — the feature is purely additive.
+
+**Verify where dictation is going.** `ghostty-voice-ctl status` reports the active sink without
+reading logs:
+
+```
+ok idle sink=wrapper wrappers=1          # routing into a talk-to-wrapped agent
+ok idle sink=focused-window wrappers=0   # the default ydotool path
+```
+
+For a per-delivery trace, the daemon log records `delivered to wrapper sink SinkId(N)` vs
+`auto-typed (focused-window sink)`:
+
+```sh
+journalctl --user -u ghostty-voiced -f
+```
+
+**Trigger-time binding (why your text never lands in the wrong place).** An utterance's target
+sink is **bound when you trigger the recording**, not when its transcript is ready — the sink
+active when you start speaking wins. It is **never silently redirected**: if the bound **wrapper
+sink** has exited by the time the transcript is ready, the transcript is **Held-for-replay**
+(cached, recoverable with `ghostty-voice-ctl replay-last`), never dumped into whatever window is
+focused now. The focused-window sink, having no window identity, is the best-effort exception
+guarded only by the Freshness window.
+
+**Running several `talk-to` sessions.** Launching another `talk-to` makes the newest wrapper sink
+the active one. If you close the **active** wrapper while others are still running, the active
+sink **hands off to the most-recently-registered still-live wrapper** (the *newest-live handoff*)
+— it does **not** drop to the focused-window sink. The focused-window sink reactivates only when
+the **last** wrapper exits. (An utterance already bound to a now-closed wrapper is still
+Held-for-replay, never handed to the survivor.)
+
+**After upgrading the package, restart the daemon.** A running `ghostty-voiced` keeps the *old*
+binary in memory until restarted; a stale daemon speaks an older control protocol and refuses the
+wrapper-sink handshake, so `talk-to`'s strip shows **`incompatible`** and dictation silently falls
+back to the focused-window path. Restart it after every upgrade:
+
+```sh
+systemctl --user restart ghostty-voiced
+```
+
+**Strip / fallback states.** While registered, `talk-to`'s bottom strip shows the daemon voice
+state (`idle`/`recording`/`transcribing`). Otherwise it shows a distinct link token — `unreachable`
+(no daemon), `incompatible` (stale/old daemon — restart it, see above), `rejected` (registration
+refused), or `dropped` (a previously-good connection ended). In every non-registered case `talk-to`
+keeps working as a plain passthrough and the daemon delivers via the focused-window sink; the reason
+is logged to `~/.local/state/ghostty-voice/talk-to.log` (`$XDG_STATE_HOME` if set).
+
 ## Troubleshooting
 
 - **Nothing typed / wrong window** — `ydotool` injects into whatever has focus; keep Ghostty
@@ -155,20 +219,10 @@ the `[input]` section of your config and restart the daemon.
   model lands; watch progress notifications, or `journalctl --user -u ghostty-voiced`. A
   corrupt fetch (SHA mismatch when `model_sha256` is pinned) is discarded and retried.
 - **Dropped characters** — raise `[inject].key_delay_ms`.
-- **`talk-to` strip shows a connection problem** — the bottom strip shows the daemon voice
-  state (`idle`/`recording`/`transcribing`) while the wrapper sink is registered, otherwise a
-  distinct link token:
-  - `unreachable` — no daemon is listening; start/enable `ghostty-voiced`.
-  - `incompatible` — the daemon speaks a different (usually older) control-protocol version, so
-    it refused the wrapper-sink registration. **This is the classic "stale daemon after a
-    package upgrade"**: the on-disk binary is new but the running daemon is the old one. Remedy:
-    `systemctl --user restart ghostty-voiced` (or upgrade the daemon). It is reported as
-    `incompatible`, never as `unreachable`, so you can tell the two apart.
-  - `rejected` — the daemon refused registration for some other reason.
-  - `dropped` — a previously-good connection ended (the daemon stopped or restarted).
-
-  `talk-to` keeps working as a plain passthrough regardless, and logs the reason to
-  `~/.local/state/ghostty-voice/talk-to.log` (`$XDG_STATE_HOME` if set).
+- **`talk-to` strip shows a connection problem** (`unreachable` / `incompatible` / `rejected` /
+  `dropped`), or dictation goes to the focused window instead of the wrapped agent — see the
+  [`talk-to` section](#talk-to--drive-a-single-agent-wrapper-sink) above. Most often `incompatible`
+  after a package upgrade: `systemctl --user restart ghostty-voiced`.
 
 ## Status
 
