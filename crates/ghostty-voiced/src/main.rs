@@ -26,7 +26,9 @@ use ghostty_voice_core::config::{Config, expand_tilde};
 use ghostty_voice_core::delivery::Delivery;
 use ghostty_voice_core::gesture::ButtonEvent;
 use ghostty_voice_core::machine::{self, Action};
-use ghostty_voice_core::protocol::{Command, Frame, ProtocolError, Response, State};
+use ghostty_voice_core::protocol::{
+    Command, Frame, ProtocolError, Response, SinkKind, State, StatusReport,
+};
 use ghostty_voice_core::queue::DeliveryQueue;
 use ghostty_voice_core::sink::{ActiveSink, Route, SinkId, SinkRegistry};
 use ghostty_voice_core::supervisor::Backoff;
@@ -406,11 +408,39 @@ async fn handle_conn(stream: UnixStream, daemon: Arc<Mutex<Daemon>>) -> Result<(
         return serve_sink(reader, write_half, daemon).await;
     }
 
+    // `status` answers with the richer [`StatusReport`] (task-10.1): the daemon
+    // state plus the active **Delivery sink** and the registered wrapper count, so
+    // a user can confirm routing without tailing journald. It is always allowed
+    // and read-only, so reading state directly matches the machine's status no-op.
+    if matches!(Command::parse(&line), Ok(Command::Status)) {
+        let report = status_report(&daemon).await;
+        write_half
+            .write_all(format!("{}\n", report.encode()).as_bytes())
+            .await?;
+        return Ok(());
+    }
+
     let response = process_command(&line, &daemon).await;
     write_half
         .write_all(format!("{}\n", response.encode()).as_bytes())
         .await?;
     Ok(())
+}
+
+/// Snapshot the daemon state and the active **Delivery sink** into a
+/// [`StatusReport`] (task-10.1): which sink kind is active (focused-window vs
+/// wrapper) and how many wrapper sinks are registered.
+async fn status_report(daemon: &Arc<Mutex<Daemon>>) -> StatusReport {
+    let d = daemon.lock().await;
+    let active_sink = match d.sinks.active() {
+        ActiveSink::Wrapper(_) => SinkKind::Wrapper,
+        ActiveSink::FocusedWindow => SinkKind::FocusedWindow,
+    };
+    StatusReport {
+        state: d.state,
+        active_sink,
+        wrapper_count: d.sinks.wrapper_count(),
+    }
 }
 
 /// Serve a registered **wrapper sink** (`talk-to`, IDEAS.md #4) on a persistent

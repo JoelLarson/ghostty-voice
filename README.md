@@ -123,6 +123,15 @@ the `[input]` section of your config and restart the daemon.
   background (context-chained), and a long silence (~10 s) ends the **session** — the assembled
   transcript is typed once. Tune the segmentation with `clip_cut_pause_seconds` /
   `session_end_silence_seconds` / `min_clip_seconds` in `[audio]`.
+- **Status**: `ghostty-voice-ctl status` reports the daemon state plus the active **Delivery
+  sink** and how many **wrapper sinks** are registered:
+  ```
+  ok idle sink=focused-window wrappers=0     # no talk-to running — default ydotool path
+  ok idle sink=wrapper wrappers=1            # a talk-to wrapper sink is the active target
+  ```
+  `sink=wrapper` confirms dictation routes into a `talk-to`-wrapped agent's PTY; `sink=focused-window`
+  is the default `ydotool` Auto-type into the focused window. The `sink=`/`wrappers=` fields are
+  additive — an older daemon answers a bare `ok <state>`.
 - **Replay**: `ghostty-voice-ctl replay-last` re-injects the most-recent cached transcript.
 - **Disable / free the 16 GB VRAM**: `systemctl --user stop ghostty-voiced` (cascades to
   whisper-server).
