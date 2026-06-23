@@ -64,8 +64,8 @@ pub fn apply(state: State, command: Command) -> Transition {
         // While the first-run model download runs, only status is answered; the
         // rest are rejected (the daemon notifies). Nothing is operable yet — the
         // model isn't even on disk, let alone in VRAM.
-        (State::Downloading, Command::Status) => go(State::Downloading, Action::None),
-        (State::Downloading, _) => reject(State::Downloading, "model still downloading"),
+        (State::Downloading(_), Command::Status) => go(state, Action::None),
+        (State::Downloading(_), _) => reject(state, "model still downloading"),
 
         // While the model loads, only status is answered; the rest are rejected.
         (State::Loading, Command::Status) => go(State::Loading, Action::None),
@@ -271,8 +271,8 @@ mod tests {
         // (the daemon notifies "model still downloading"), never hang or start a
         // recording with no model to transcribe against.
         for cmd in [Command::Toggle, Command::Vad, Command::Continuous] {
-            let t = apply(State::Downloading, cmd);
-            assert_eq!(t.next, State::Downloading, "stays in Downloading");
+            let t = apply(State::Downloading(None), cmd);
+            assert_eq!(t.next, State::Downloading(None), "stays in Downloading");
             assert_eq!(t.action, Action::None, "no recording starts");
             match &t.response {
                 Response::Err(msg) => assert!(
@@ -286,10 +286,20 @@ mod tests {
 
     #[test]
     fn downloading_reports_status_without_changing_state() {
-        let t = apply(State::Downloading, Command::Status);
-        assert_eq!(t.next, State::Downloading);
+        let t = apply(State::Downloading(None), Command::Status);
+        assert_eq!(t.next, State::Downloading(None));
         assert_eq!(t.action, Action::None);
-        assert_eq!(t.response, Response::Ok(State::Downloading));
+        assert_eq!(t.response, Response::Ok(State::Downloading(None)));
+    }
+
+    #[test]
+    fn downloading_status_preserves_the_carried_percent() {
+        // The download percent lives in the state, so a status query while
+        // downloading must echo the current percent unchanged — never reset it.
+        let t = apply(State::Downloading(Some(42)), Command::Status);
+        assert_eq!(t.next, State::Downloading(Some(42)));
+        assert_eq!(t.action, Action::None);
+        assert_eq!(t.response, Response::Ok(State::Downloading(Some(42))));
     }
 
     #[test]
@@ -297,7 +307,10 @@ mod tests {
         // Nothing is operable until the model lands; only status is answered.
         for cmd in [Command::ReplayLast, Command::Reload, Command::Cancel] {
             assert!(
-                matches!(apply(State::Downloading, cmd).response, Response::Err(_)),
+                matches!(
+                    apply(State::Downloading(Some(50)), cmd).response,
+                    Response::Err(_)
+                ),
                 "{cmd:?} must be rejected while downloading"
             );
         }

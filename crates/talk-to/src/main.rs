@@ -364,7 +364,7 @@ fn serve_link(shared: &Arc<Mutex<Shared>>, stream: UnixStream) {
 /// `transcript` frame queues bytes for the proxy loop to inject into the child.
 fn apply_frame(shared: &Arc<Mutex<Shared>>, line: &str) {
     match Frame::parse(line) {
-        Ok(Frame::State(s)) => set_shared_state(shared, s.as_str()),
+        Ok(Frame::State(s)) => set_shared_state(shared, &s.label()),
         Ok(Frame::Transcript(text)) => {
             shared
                 .lock()

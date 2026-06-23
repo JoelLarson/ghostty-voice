@@ -3,11 +3,11 @@ id: TASK-13
 title: >-
   PRD: report model download progress on the talk-to strip + status (drop
   notify-send)
-status: In Progress
+status: Done
 assignee:
   - claude
 created_date: '2026-06-23 05:54'
-updated_date: '2026-06-23 06:02'
+updated_date: '2026-06-23 06:13'
 labels:
   - prd
   - needs-triage
@@ -93,11 +93,11 @@ The real first-run download (network + ~3 GB model, GPU) is not exercisable in a
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The talk-to strip shows `downloading <pct>%` live during the model download, and plain `downloading` when the total size is unknown
-- [ ] #2 `ghostty-voice-ctl status` reports the download percent (`ok downloading <pct> sink=… wrappers=…`), additive and backward-compatible with a bare `downloading`
-- [ ] #3 No `notify-send` is emitted for download progress/start/complete/failure; all non-download notifications are unchanged; download events remain in the journald log
-- [ ] #4 The percent lives in `State::Downloading(Option<u8>)` as the single source of truth feeding both `Frame::State` and `StatusReport`; the daemon updates it via `set_state` (strip and status never diverge), throttled to whole-percent changes
-- [ ] #5 All work is test-first (Chicago-style): protocol token/round-trip/label unit tests + a pushed-frame integration test; cargo test, clippy, and fmt green
+- [x] #1 The talk-to strip shows `downloading <pct>%` live during the model download, and plain `downloading` when the total size is unknown
+- [x] #2 `ghostty-voice-ctl status` reports the download percent (`ok downloading <pct> sink=… wrappers=…`), additive and backward-compatible with a bare `downloading`
+- [x] #3 No `notify-send` is emitted for download progress/start/complete/failure; all non-download notifications are unchanged; download events remain in the journald log
+- [x] #4 The percent lives in `State::Downloading(Option<u8>)` as the single source of truth feeding both `Frame::State` and `StatusReport`; the daemon updates it via `set_state` (strip and status never diverge), throttled to whole-percent changes
+- [x] #5 All work is test-first (Chicago-style): protocol token/round-trip/label unit tests + a pushed-frame integration test; cargo test, clippy, and fmt green
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -113,3 +113,31 @@ Approach A (decided): the download percent lives in `State::Downloading(Option<u
 
 After each slice: cargo test --workspace, cargo clippy --workspace --all-targets, cargo fmt --check all green. Live ~3 GB download is not exercisable headless — wiring validated by protocol/label units + pushed-frame integration test + throttle unit test; reported demo-only at finalization. Leave on a branch, no push.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Delivered end to end across the three subtasks (all Done), Approach A throughout — the percent lives in `State::Downloading(Option<u8>)`, one source of truth feeding both `Frame::State` (strip) and `StatusReport` (status).
+
+13.1 protocol (core, test-first): `State::Downloading(Option<u8>)` (stays Copy); `as_str`→`encode_token()->String`; `State::parse` reconstructs the optional percent from the whole state substring (bare `downloading` backward-compatible, >100/non-numeric/trailing rejected); `State::label()` renders `downloading 42%`; `StatusReport::parse` isolates the state substring before the `sink=`/`wrappers=` fields; machine `Downloading(_)` arms preserve the carried percent. New integration test `ghostty-voiced/tests/download_progress.rs` proves a pushed `state downloading 42` decodes and renders `downloading 42%` over a real socket.
+
+13.2 daemon: pure unit-tested `PercentThrottle` (whole-percent dedup); `download_model_once` enters `Downloading(None)` per attempt (retry restarts the percent), runs the blocking transfer in `spawn_blocking`, and forwards throttled percents over a sync→async mpsc into a task calling `set_state(Downloading(Some(pct)))`. All four download notify-sends removed (start, per-10% milestone, complete, failed-retry); journald logs + every non-download notify retained.
+
+13.3 docs: README first-run/model section, strip-states paragraph, and troubleshooting note document `downloading <pct>` in `status` / `downloading <pct>%` on the strip and that notify-send no longer reports download progress (journald still does), in CONTEXT.md vocabulary.
+
+Verification: `cargo test --workspace`, `cargo clippy --workspace --all-targets`, `cargo fmt --check` all green; every pre-existing test still passes.
+
+Demo-only (reported honestly): the live first-run fetch (network + ~3 GB model + GPU) cannot be exercised in this headless environment, so the live climbing percent and the absence-of-toasts on a real download are verified by faithful wiring + the testable surfaces (protocol/label units, the `PercentThrottle` units, and the pushed-frame integration test), not by an end-to-end live run.
+
+Branch `task-13-download-progress-on-strip` (4 code/doc commits + backlog updates). Not pushed; no tags; no AUR publish — left for review per instructions.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+PRD complete: model-download progress is now part of the daemon's observable **State** and flows to the same surfaces as every other state. The percent lives in `State::Downloading(Option<u8>)` — one source of truth that both the wrapper-sink `Frame::State` push and the `StatusReport` serialize — so the `talk-to` **status strip** shows `downloading 42%` and `ghostty-voice-ctl status` shows `downloading 42` without ever diverging, with a bare `downloading` until a `Content-Length` is known. The daemon streams real percentages from the `spawn_blocking` download through a pure, whole-percent `PercentThrottle` across a sync→async channel into `set_state`. All four download-related `notify-send` toasts are removed (start, per-10% milestones, complete, failed-retry); their journald logs and every non-download notification are unchanged. The `downloading <pct>` token is additive and backward-compatible with a bare `downloading` on the deliberately-dumb line protocol. README documents the new behaviour.
+
+Success Validation (the five acceptance criteria): #1 strip shows `downloading <pct>%` / plain `downloading` — implemented, covered by the pushed-frame integration test (live climb is demo-only). #2 `status` reports `ok downloading <pct> sink=… wrappers=…`, additive/backward-compatible — covered by StatusReport encode/parse units. #3 no download notify-send, non-download notifications unchanged, events stay in journald — code-audited. #4 percent in `State::Downloading(Option<u8>)` as the single source feeding `Frame::State` and `StatusReport`, updated via `set_state`, whole-percent throttled — implemented and unit-tested. #5 all test-first (Chicago-style) with protocol/label/round-trip units, a throttle unit, and a pushed-frame integration test; cargo test/clippy/fmt green.
+
+Honest scope note: the live ~3 GB network download (no GPU/mic/network here) is demo-only; every cargo-testable aspect is green and the live path is wired faithfully. Work is on branch `task-13-download-progress-on-strip`, not pushed — left for review.
+<!-- SECTION:FINAL_SUMMARY:END -->
