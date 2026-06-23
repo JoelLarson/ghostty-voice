@@ -3,10 +3,11 @@ id: TASK-13
 title: >-
   PRD: report model download progress on the talk-to strip + status (drop
   notify-send)
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - claude
 created_date: '2026-06-23 05:54'
-updated_date: '2026-06-23 05:55'
+updated_date: '2026-06-23 06:02'
 labels:
   - prd
   - needs-triage
@@ -98,3 +99,17 @@ The real first-run download (network + ~3 GB model, GPU) is not exercisable in a
 - [ ] #4 The percent lives in `State::Downloading(Option<u8>)` as the single source of truth feeding both `Frame::State` and `StatusReport`; the daemon updates it via `set_state` (strip and status never diverge), throttled to whole-percent changes
 - [ ] #5 All work is test-first (Chicago-style): protocol token/round-trip/label unit tests + a pushed-frame integration test; cargo test, clippy, and fmt green
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+Approach A (decided): the download percent lives in `State::Downloading(Option<u8>)`, one source of truth feeding both `Frame::State` (strip) and `StatusReport` (status). Work the three subtasks in dependency order, Chicago-style TDD throughout.
+
+13.1 protocol (core, test-first): `State::Downloading(Option<u8>)` (stays Copy); replace `State::as_str` with `encode_token()->String`; add `State::label()->String`; `State::parse` accepts the full state substring (`downloading 42`); `StatusReport::parse` isolates the state substring (tokens after `ok` up to first `sink=`/`wrappers=`); update `machine.rs` arms to `Downloading(_)` preserving the carried percent; update daemon/talk-to call sites (talk-to strip renders via `label()`). New integration test mirroring sink_registration.rs: a pushed `state downloading 42` parses + renders `downloading 42%`.
+
+13.2 daemon: enter `Downloading(None)`; in `download_model_once` run the blocking download, throttle whole-percent changes through a pure `PercentThrottle` helper, send over a sync→async channel into `set_state(Downloading(Some(pct)))`. Remove the download-related notify-send calls (start, per-10% milestones, complete, failed-retry); keep journald logs + all non-download notifies. Retry resets percent to None. Unit-test the throttle.
+
+13.3 docs: README first-run/model section documents `downloading <pct>` on the strip and in `status`, and that notify-send no longer reports download progress (journald still does), in CONTEXT.md vocabulary.
+
+After each slice: cargo test --workspace, cargo clippy --workspace --all-targets, cargo fmt --check all green. Live ~3 GB download is not exercisable headless — wiring validated by protocol/label units + pushed-frame integration test + throttle unit test; reported demo-only at finalization. Leave on a branch, no push.
+<!-- SECTION:PLAN:END -->
