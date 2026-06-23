@@ -1,10 +1,10 @@
 ---
 id: TASK-10.2
 title: 'talk-to: distinguish connection states on the strip + log the reason'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-06-22 23:26'
-updated_date: '2026-06-23 04:13'
+updated_date: '2026-06-23 04:16'
 labels:
   - talk-to
 dependencies: []
@@ -27,10 +27,10 @@ Strip presentation stays visually verified per task-9; any pure condition→toke
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The strip shows distinct tokens for unreachable, dropped, and rejected connection states
-- [ ] #2 talk-to logs the failure reason for diagnosis
-- [ ] #3 Any pure condition→token mapping is covered by test-first unit tests; cargo test green
-- [ ] #4 The token meanings are documented (here or folded into the troubleshooting docs issue)
+- [x] #1 The strip shows distinct tokens for unreachable, dropped, and rejected connection states
+- [x] #2 talk-to logs the failure reason for diagnosis
+- [x] #3 Any pure condition→token mapping is covered by test-first unit tests; cargo test green
+- [x] #4 The token meanings are documented (here or folded into the troubleshooting docs issue)
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -43,3 +43,15 @@ Chicago-style TDD on a new pure module; talk-to wiring is OS glue (not unit-test
 3. Document token meanings (brief here; fuller in 10.4).
 4. cargo test/clippy/fmt green.
 <!-- SECTION:PLAN:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+talk-to now shows distinct connection-state tokens and logs the reason. Committed as d121fd7.
+
+- core `link.rs` (Chicago-style TDD, no doubles): `LinkState {Unreachable, Rejected, Dropped}` with `.token()` ("unreachable"/"rejected"/"dropped", asserted distinct) and `classify_first_line(&str) -> Registration {Registered, Rejected}` — a parseable pushed `Frame` ⇒ Registered, a one-shot `ok`/`err` reply or junk ⇒ Rejected (an old daemon answers `err unknown command: register-sink`).
+- talk-to `serve_link`: connect failure → Unreachable; classify the daemon's first reply → Registered (stream frames, strip shows the daemon voice state) or Rejected; EOF after being registered → Dropped. The detailed reason (connect error string, rejection line) is appended to `~/.local/state/ghostty-voice/talk-to.log` (`$XDG_STATE_HOME` if set) — a file, not stderr, because the raw-mode full-screen proxy would be corrupted by terminal writes.
+- README troubleshooting documents the three link tokens and the log path.
+
+AC #1–#4 met. Strip presentation stays visually verified (pure condition→token mapping is unit-tested). The version-based `incompatible` token is the sibling issue TASK-10.3. `cargo test --workspace` (267), clippy, fmt green.
+<!-- SECTION:FINAL_SUMMARY:END -->
