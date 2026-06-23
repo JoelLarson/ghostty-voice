@@ -247,10 +247,13 @@ async fn supervise(daemon: Arc<Mutex<Daemon>>) {
 ///
 /// Presence-only check (no multi-GB re-hash on every boot): if `model_path` is
 /// absent the daemon enters `Downloading`, streams the model from `model_url`
-/// with SHA-256 verification, and notifies progress at coarse milestones. The
-/// fetch is retried with backoff until it succeeds — the daemon stays in
-/// `Downloading` (commands rejected) the whole time, never spinning up
-/// whisper-server against a missing model. Returns once the model is present.
+/// with SHA-256 verification, and reports progress through the observable
+/// `Downloading(Some(pct))` State (the status strip and `ghostty-voice-ctl
+/// status`) rather than `notify-send`. The fetch is retried with backoff until it
+/// succeeds — the daemon stays in `Downloading` (commands rejected) the whole
+/// time, never spinning up whisper-server against a missing model. Returns once
+/// the model is present. The start/complete/failure milestones stay in the
+/// journald log for after-the-fact diagnosis.
 async fn ensure_model_present(daemon: &Arc<Mutex<Daemon>>) {
     let config = daemon.lock().await.config.clone();
     let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
@@ -267,7 +270,6 @@ async fn ensure_model_present(daemon: &Arc<Mutex<Daemon>>) {
         "model not found at {} — first-run download",
         model.display()
     );
-    notify("ghostty-voice: downloading the ~3 GB Whisper model (first run)…");
 
     let backoff = Backoff::new(Duration::from_secs(2), Duration::from_secs(60));
     let mut attempt = 0u32;
@@ -276,43 +278,99 @@ async fn ensure_model_present(daemon: &Arc<Mutex<Daemon>>) {
             return;
         }
         attempt = attempt.saturating_add(1);
-        match download_model_once(&config, &model).await {
+        match download_model_once(daemon, &config, &model).await {
             Ok(()) => {
                 info!("model download complete: {}", model.display());
-                notify("ghostty-voice: model download complete — loading…");
                 return;
             }
             Err(e) => {
                 error!("model download failed (attempt {attempt}): {e:#}");
-                notify("ghostty-voice: model download failed — retrying");
                 tokio::time::sleep(backoff.delay(attempt)).await;
             }
         }
     }
 }
 
-/// One model-download attempt: stream + SHA-verify into place, emitting a
-/// `notify-send` at each new 10%-progress milestone so the user sees movement
-/// without spamming. Runs the blocking transfer off the async runtime.
-async fn download_model_once(config: &Config, dest: &Path) -> Result<()> {
+/// Whole-percent throttle for download progress.
+///
+/// A multi-GB fetch fires `on_progress` on every network chunk, but the strip
+/// and `status` only care about whole-percent movement — so the percent advances
+/// smoothly without thrashing. Given the latest [`Progress::percent`], `update`
+/// returns `Some(pct)` the first time each whole percent is seen and `None` for
+/// repeats at that percent or while the total is still unknown. Pure and
+/// stateful only in the last-emitted percent — unit-tested without any IO.
+struct PercentThrottle {
+    last: Option<u8>,
+}
+
+impl PercentThrottle {
+    fn new() -> Self {
+        Self { last: None }
+    }
+
+    /// Return `Some(pct)` only when the whole percent advances to a new value;
+    /// `None` for a repeat of the current percent or the percent-unknown phase.
+    fn update(&mut self, pct: Option<u8>) -> Option<u8> {
+        match pct {
+            Some(p) if self.last != Some(p) => {
+                self.last = Some(p);
+                Some(p)
+            }
+            _ => None,
+        }
+    }
+}
+
+/// One model-download attempt: stream + SHA-verify into place, streaming real
+/// progress into the observable [`State`] so the **status strip** and
+/// `ghostty-voice-ctl status` both report it from one source of truth.
+///
+/// The attempt opens in `Downloading(None)` (percent unknown) — so a retry
+/// restarts the percent — then the blocking transfer runs off the async runtime
+/// in `spawn_blocking`. Its `on_progress` closure feeds a [`PercentThrottle`] and
+/// sends whole-percent updates across the sync→async boundary over a channel; a
+/// concurrent task applies each via `set_state(Downloading(Some(pct)))`, keeping
+/// the cached state (read by `status`) and the `watch<State>` broadcast (read by
+/// the strip) in lockstep. Progress is no longer surfaced via `notify-send`; the
+/// journald log records the milestones for after-the-fact diagnosis.
+async fn download_model_once(
+    daemon: &Arc<Mutex<Daemon>>,
+    config: &Config,
+    dest: &Path,
+) -> Result<()> {
     let url = config.whisper.model_url.clone();
     let sha = config.whisper.model_sha256.clone();
     let dest = dest.to_path_buf();
 
-    tokio::task::spawn_blocking(move || {
-        let mut last_milestone = 0u8;
+    // Each attempt starts indeterminate, so a retry visibly restarts its percent.
+    set_state(daemon, State::Downloading(None)).await;
+
+    // Carry whole-percent updates from the blocking transfer (sync) into the
+    // async world that owns `set_state`.
+    let (tx, mut rx) = mpsc::unbounded_channel::<u8>();
+    let applier_daemon = daemon.clone();
+    let applier = tokio::spawn(async move {
+        while let Some(pct) = rx.recv().await {
+            set_state(&applier_daemon, State::Downloading(Some(pct))).await;
+        }
+    });
+
+    let transfer = tokio::task::spawn_blocking(move || {
+        let mut throttle = PercentThrottle::new();
         ghostty_voice_io::download::download_model(&url, &dest, &sha, |p| {
-            if let Some(pct) = p.percent()
-                && pct >= last_milestone.saturating_add(10)
-            {
-                last_milestone = pct - (pct % 10);
-                notify(&format!(
-                    "ghostty-voice: downloading model… {last_milestone}%"
-                ));
+            if let Some(pct) = throttle.update(p.percent()) {
+                // The receiver lives until the transfer ends; a send failure only
+                // means the daemon is shutting down, so it's safe to ignore.
+                let _ = tx.send(pct);
             }
         })
     })
-    .await?
+    .await;
+
+    // The closure (and its `tx`) is dropped when the transfer task ends, closing
+    // the channel so the applier finishes draining and returns.
+    let _ = applier.await;
+    transfer?
 }
 
 async fn spawn_whisper(config: &Config) -> Result<tokio::process::Child> {
@@ -1389,4 +1447,44 @@ fn notify(message: &str) {
     let _ = std::process::Command::new("notify-send")
         .arg(message)
         .status();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn throttle_emits_only_on_a_new_whole_percent() {
+        // Many network chunks land inside the same whole percent; the strip must
+        // update on whole-percent changes, not flicker on every chunk. The
+        // throttle passes the first sighting of each percent and suppresses
+        // repeats at that same percent.
+        let mut throttle = PercentThrottle::new();
+        assert_eq!(
+            throttle.update(Some(0)),
+            Some(0),
+            "first percent is emitted"
+        );
+        assert_eq!(throttle.update(Some(0)), None, "same percent is suppressed");
+        assert_eq!(throttle.update(Some(1)), Some(1), "advancing emits");
+        assert_eq!(throttle.update(Some(1)), None);
+        assert_eq!(
+            throttle.update(Some(42)),
+            Some(42),
+            "a jump still emits once"
+        );
+        assert_eq!(throttle.update(Some(42)), None);
+    }
+
+    #[test]
+    fn throttle_passes_through_the_percent_unknown_phase() {
+        // Before a Content-Length is known `percent()` is None; the throttle emits
+        // nothing (the daemon stays in Downloading(None)) and does not treat the
+        // absence as a change to react to.
+        let mut throttle = PercentThrottle::new();
+        assert_eq!(throttle.update(None), None);
+        assert_eq!(throttle.update(None), None);
+        // The first real percent after the unknown phase still emits.
+        assert_eq!(throttle.update(Some(3)), Some(3));
+    }
 }
