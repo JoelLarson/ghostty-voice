@@ -1,10 +1,10 @@
 ---
 id: TASK-10.1
 title: 'status: report the active Delivery sink + registered wrapper count'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-06-22 23:26'
-updated_date: '2026-06-23 04:10'
+updated_date: '2026-06-23 04:12'
 labels:
   - talk-to
 dependencies: []
@@ -29,11 +29,11 @@ Keep the deliberately-dumb newline line protocol (no JSON). Chicago-style TDD.
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 status output includes the active sink kind (focused-window vs wrapper) and the registered wrapper-sink count
-- [ ] #2 Additive and backward-compatible with the existing `ok <state>` response
-- [ ] #3 Works correctly with and without a wrapper registered
-- [ ] #4 Test-first unit tests for protocol encode/parse + a daemon-level integration test (mirroring ordered_drain.rs) showing a registered wrapper reported active; cargo test green
-- [ ] #5 README documents the new status output
+- [x] #1 status output includes the active sink kind (focused-window vs wrapper) and the registered wrapper-sink count
+- [x] #2 Additive and backward-compatible with the existing `ok <state>` response
+- [x] #3 Works correctly with and without a wrapper registered
+- [x] #4 Test-first unit tests for protocol encode/parse + a daemon-level integration test (mirroring ordered_drain.rs) showing a registered wrapper reported active; cargo test green
+- [x] #5 README documents the new status output
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -47,3 +47,16 @@ Chicago-style TDD. Additive, backward-compatible extension of the `status` reply
 4. README: document the new status output.
 5. cargo test/clippy/fmt green.
 <!-- SECTION:PLAN:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+`status` now reports the active Delivery sink + registered wrapper count, additively and backward-compatibly. Committed as 1044c6e.
+
+- protocol.rs (Chicago-style TDD): `SinkKind {FocusedWindow, Wrapper}` (as_str/parse) and `StatusReport {state, active_sink, wrapper_count}` encoding `ok <state> sink=<kind> wrappers=<n>`. Parse requires a leading `ok <state>` and treats `sink=`/`wrappers=` as optional, so a bare `ok idle` from an older daemon still parses (defaults focused-window / 0). Unit tests cover encode, round-trip, backward-compat, and rejection of err/unknown-state lines.
+- ghostty-voiced: `handle_conn` special-cases `status`, building the `StatusReport` from the live `SinkRegistry` (active kind via `ActiveSink`, count via `wrapper_count()`). Status is read-only and always allowed, so bypassing the state machine matches its no-op status arm.
+- Integration test `status_report.rs` (real `SinkRegistry` + real `StatusReport` over a real Unix socket, mirroring ordered_drain.rs): a registered wrapper reports `sink=wrapper wrappers=N`; none reports `sink=focused-window wrappers=0`.
+- README documents the new output.
+
+AC #1–#5 met. `cargo test --workspace` (261), clippy, fmt green.
+<!-- SECTION:FINAL_SUMMARY:END -->
