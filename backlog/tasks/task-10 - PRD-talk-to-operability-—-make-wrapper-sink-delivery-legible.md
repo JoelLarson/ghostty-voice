@@ -1,9 +1,10 @@
 ---
 id: TASK-10
 title: 'PRD: talk-to operability — make wrapper-sink delivery legible'
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-06-22 23:25'
+updated_date: '2026-06-23 04:10'
 labels:
   - prd
   - talk-to
