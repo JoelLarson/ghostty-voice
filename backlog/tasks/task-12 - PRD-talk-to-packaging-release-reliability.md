@@ -1,10 +1,10 @@
 ---
 id: TASK-12
 title: 'PRD: talk-to packaging & release reliability'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-06-22 23:25'
-updated_date: '2026-06-23 04:26'
+updated_date: '2026-06-23 04:31'
 labels:
   - prd
   - packaging
@@ -44,8 +44,19 @@ Successful when: upgrading the package makes the running daemon pick up the new 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `post_upgrade` unmissably instructs (and best-effort performs) the daemon restart, with the exact command; no transaction failure when no daemon is running
-- [ ] #2 A repeatable release procedure is captured: bump pkgver, push tag, updpkgsums, regenerate .SRCINFO, push AUR
-- [ ] #3 A guard verifies all four binaries (ghostty-voice, ghostty-voiced, ghostty-voice-ctl, talk-to) are installed and fails if any is missing
-- [ ] #4 Validated by simulating a package upgrade and a dry-run release
+- [x] #1 `post_upgrade` unmissably instructs (and best-effort performs) the daemon restart, with the exact command; no transaction failure when no daemon is running
+- [x] #2 A repeatable release procedure is captured: bump pkgver, push tag, updpkgsums, regenerate .SRCINFO, push AUR
+- [x] #3 A guard verifies all four binaries (ghostty-voice, ghostty-voiced, ghostty-voice-ctl, talk-to) are installed and fails if any is missing
+- [x] #4 Validated by simulating a package upgrade and a dry-run release
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+PRD complete — both issues done; Success Validation holds (the testable parts; the live-daemon restart is demo-only here and reported honestly).
+
+- TASK-12.1 (3598728): `post_upgrade` now unmissably instructs the daemon restart with the exact command and why (stale daemon → `incompatible` → focused-window fallback), and best-effort restarts already-running per-user instances via `systemctl --machine=<user>@.host --user try-restart` — never starting a stopped daemon and never failing the transaction. Verified: no-daemon scriptlet prints + exits 0.
+- TASK-12.2 (b5a0f1a): a binary-completeness guard (inline in `package()` as the build gate + `packaging/check-package-binaries.sh` standalone, cargo-tested) that fails if any of the four binaries is missing; real `sha256sums` (no SKIP); and `packaging/RELEASE.md` capturing the repeatable flow (bump pkgver → tag/push → updpkgsums → makepkg -f guard → regenerate .SRCINFO → push AUR) with a dry-run.
+
+Success Validation: an upgrade unmissably tells the user to restart (with the exact command) and best-effort restarts a running daemon without breaking the transaction when none runs (verified for the no-daemon path; the ExecMainStartTimestamp change is demo-only — needs a live user-session daemon + GPU); the documented release flow regenerates `.SRCINFO` and real checksums; the completeness guard rejects a package missing any of the four binaries and passes when all are present (proven by cargo test + a bash simulation of the inline guard). Out-of-scope (CI beyond a local check) untouched. AC #1–#4 met. `cargo test --workspace` (280), clippy, fmt green. Not pushed/tagged/published per the no-publish constraint — left on branch talk-to-followups for review.
+<!-- SECTION:FINAL_SUMMARY:END -->
