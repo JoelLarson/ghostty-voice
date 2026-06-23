@@ -14,6 +14,7 @@ pub mod gesture;
 pub mod inject;
 pub mod input;
 pub mod key_combo;
+pub mod link;
 pub mod machine;
 pub mod model;
 pub mod pipeline;

@@ -155,6 +155,12 @@ the `[input]` section of your config and restart the daemon.
   model lands; watch progress notifications, or `journalctl --user -u ghostty-voiced`. A
   corrupt fetch (SHA mismatch when `model_sha256` is pinned) is discarded and retried.
 - **Dropped characters** — raise `[inject].key_delay_ms`.
+- **`talk-to` strip shows a connection problem** — the bottom strip shows the daemon voice
+  state (`idle`/`recording`/`transcribing`) while the wrapper sink is registered, otherwise a
+  distinct link token: `unreachable` (no daemon — start/enable `ghostty-voiced`), `rejected`
+  (the daemon refused registration), or `dropped` (a previously-good connection ended — the
+  daemon stopped or restarted). `talk-to` keeps working as a plain passthrough regardless, and
+  logs the reason to `~/.local/state/ghostty-voice/talk-to.log` (`$XDG_STATE_HOME` if set).
 
 ## Status
 

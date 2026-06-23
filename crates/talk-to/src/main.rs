@@ -22,6 +22,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Result, bail};
+use ghostty_voice_core::link::{LinkState, Registration, classify_first_line};
 use ghostty_voice_core::protocol::Frame;
 use ghostty_voice_core::pty::{PtyError, injection_bytes, split_command};
 use ghostty_voice_core::strip;
@@ -53,9 +54,10 @@ extern "C" fn on_sigwinch(_sig: libc::c_int) {
 /// interleave across threads.
 #[derive(Default)]
 struct Shared {
-    /// Latest voice-state token for the strip (from `state` frames), e.g.
-    /// `idle`, `recording`, `transcribing`, or `offline` when the daemon is
-    /// unreachable.
+    /// Latest token for the strip: the daemon's voice state (from `state` frames)
+    /// — `idle`, `recording`, `transcribing` — while cleanly registered, or a
+    /// [`LinkState`] token (`unreachable`/`rejected`/`dropped`) when the link to
+    /// the daemon is down, so the failure modes stay distinct (task-10.2).
     state: String,
     /// Transcript bytes waiting to be injected into the child PTY (from
     /// `transcript` frames), already stripped of any trailing newline.
@@ -277,45 +279,121 @@ fn exec_child(program: &str, rest: &[String]) {
 /// shared state on a background thread. `state` frames update the strip token;
 /// `transcript` frames queue bytes for the proxy loop to inject into the child.
 ///
-/// The wrapper sink is purely additive: if the daemon is unreachable the strip
-/// reads `offline` and the proxy keeps working as a passthrough. On a dropped
-/// connection it reconnects (re-registering when the daemon returns).
+/// The wrapper sink is purely additive: the proxy keeps working as a passthrough
+/// regardless. When the link is down the strip shows a distinct [`LinkState`]
+/// token — `unreachable` (no daemon), `rejected` (daemon refused register-sink,
+/// e.g. an old daemon), or `dropped` (was registered, then EOF) — never a generic
+/// "offline" (task-10.2), and the reason is logged for diagnosis. It reconnects
+/// on a 2 s cadence, re-registering when the daemon returns.
 fn spawn_sink_client(shared: Arc<Mutex<Shared>>) {
     std::thread::spawn(move || {
         let Some(path) = daemon_socket_path() else {
-            set_shared_state(&shared, "offline");
+            set_shared_state(&shared, LinkState::Unreachable.token());
+            log_link("no daemon socket path (XDG_RUNTIME_DIR unset)");
             return;
         };
         loop {
-            if let Ok(mut stream) = UnixStream::connect(&path)
-                && stream.write_all(b"register-sink\n").is_ok()
-            {
-                let reader = BufReader::new(stream);
-                for line in reader.lines() {
-                    let Ok(line) = line else { break };
-                    match Frame::parse(&line) {
-                        Ok(Frame::State(s)) => set_shared_state(&shared, s.as_str()),
-                        Ok(Frame::Transcript(text)) => {
-                            shared
-                                .lock()
-                                .unwrap()
-                                .pending_inject
-                                .extend_from_slice(&injection_bytes(&text));
-                        }
-                        Err(_) => {} // ignore frames we don't understand
-                    }
+            match UnixStream::connect(&path) {
+                Err(e) => {
+                    set_shared_state(&shared, LinkState::Unreachable.token());
+                    log_link(&format!("daemon unreachable at {} ({e})", path.display()));
                 }
+                Ok(mut stream) => match stream.write_all(b"register-sink\n") {
+                    Ok(()) => serve_link(&shared, stream),
+                    Err(e) => {
+                        set_shared_state(&shared, LinkState::Dropped.token());
+                        log_link(&format!("register-sink write failed ({e})"));
+                    }
+                },
             }
-            // Daemon down or connection dropped: show offline and retry so the
-            // wrapper sink re-registers when the daemon comes back.
-            set_shared_state(&shared, "offline");
             std::thread::sleep(Duration::from_secs(2));
         }
     });
 }
 
+/// Read the daemon's reply to `register-sink`, classify it, and — if we are
+/// registered — stream pushed frames into `shared` until the connection drops.
+/// Sets the strip token and logs the reason on every non-registered outcome.
+fn serve_link(shared: &Arc<Mutex<Shared>>, stream: UnixStream) {
+    let mut lines = BufReader::new(stream).lines();
+    let first = match lines.next() {
+        Some(Ok(line)) => line,
+        Some(Err(e)) => {
+            set_shared_state(shared, LinkState::Dropped.token());
+            log_link(&format!("connection error after register-sink ({e})"));
+            return;
+        }
+        None => {
+            set_shared_state(shared, LinkState::Dropped.token());
+            log_link("connection closed with no reply to register-sink");
+            return;
+        }
+    };
+
+    match classify_first_line(&first) {
+        Registration::Rejected => {
+            set_shared_state(shared, LinkState::Rejected.token());
+            log_link(&format!("daemon rejected register-sink: {first:?}"));
+        }
+        Registration::Registered => {
+            apply_frame(shared, &first);
+            for line in lines {
+                let Ok(line) = line else { break };
+                apply_frame(shared, &line);
+            }
+            // The frame loop ended → EOF after a previously-good registration.
+            set_shared_state(shared, LinkState::Dropped.token());
+            log_link("registered connection dropped (daemon EOF)");
+        }
+    }
+}
+
+/// Apply one pushed [`Frame`]: a `state` frame repaints the strip token; a
+/// `transcript` frame queues bytes for the proxy loop to inject into the child.
+fn apply_frame(shared: &Arc<Mutex<Shared>>, line: &str) {
+    match Frame::parse(line) {
+        Ok(Frame::State(s)) => set_shared_state(shared, s.as_str()),
+        Ok(Frame::Transcript(text)) => {
+            shared
+                .lock()
+                .unwrap()
+                .pending_inject
+                .extend_from_slice(&injection_bytes(&text));
+        }
+        Err(_) => {} // ignore frames we don't understand
+    }
+}
+
 fn set_shared_state(shared: &Arc<Mutex<Shared>>, token: &str) {
     shared.lock().unwrap().state = token.to_owned();
+}
+
+/// Append a link diagnostic line to the talk-to log file (best-effort). We log to
+/// a file, not stderr: talk-to runs a raw-mode full-screen proxy, so writing to
+/// the terminal mid-TUI would corrupt the child's rendering.
+fn log_link(reason: &str) {
+    let Some(path) = link_log_path() else { return };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = writeln!(file, "talk-to: {reason}");
+    }
+}
+
+/// The talk-to log file: `$XDG_STATE_HOME/ghostty-voice/talk-to.log`, falling
+/// back to `~/.local/state/ghostty-voice/talk-to.log`.
+fn link_log_path() -> Option<PathBuf> {
+    if let Ok(dir) = std::env::var("XDG_STATE_HOME") {
+        return Some(PathBuf::from(dir).join("ghostty-voice/talk-to.log"));
+    }
+    std::env::var("HOME")
+        .ok()
+        .map(|home| PathBuf::from(home).join(".local/state/ghostty-voice/talk-to.log"))
 }
 
 /// The daemon's control socket, `$XDG_RUNTIME_DIR/ghostty-voice.sock` (matching
