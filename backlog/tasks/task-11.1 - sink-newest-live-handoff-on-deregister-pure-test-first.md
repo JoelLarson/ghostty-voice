@@ -1,10 +1,10 @@
 ---
 id: TASK-11.1
 title: 'sink: newest-live handoff on deregister (pure, test-first)'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-06-22 23:27'
-updated_date: '2026-06-23 04:04'
+updated_date: '2026-06-23 04:06'
 labels:
   - talk-to
 dependencies: []
@@ -25,10 +25,10 @@ Change `SinkRegistry` so deregistering the **active** wrapper reactivates the **
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 deregister(active wrapper) reactivates the most-recently-registered still-live wrapper; focused-window only when none remain
-- [ ] #2 deregister(non-active wrapper) never changes which sink is active
-- [ ] #3 route() for a dead-bound wrapper still returns Held (unchanged)
-- [ ] #4 Test-first unit tests cover multi-wrapper register/deregister ordering, the handoff, and the empty fallback; cargo test green
+- [x] #1 deregister(active wrapper) reactivates the most-recently-registered still-live wrapper; focused-window only when none remain
+- [x] #2 deregister(non-active wrapper) never changes which sink is active
+- [x] #3 route() for a dead-bound wrapper still returns Held (unchanged)
+- [x] #4 Test-first unit tests cover multi-wrapper register/deregister ordering, the handoff, and the empty fallback; cargo test green
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -45,3 +45,15 @@ Chicago-style TDD on the pure `SinkRegistry` (crates/ghostty-voice-core/src/sink
 3. Keep `register`, `active`, `is_live`, `route` semantics; add `wrapper_count()` for TASK-10.1.
 4. cargo test/clippy/fmt green.
 <!-- SECTION:PLAN:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implemented the newest-live handoff in the pure `SinkRegistry` (crates/ghostty-voice-core/src/sink.rs), Chicago-style TDD (no doubles).
+
+Change: `live` went from an unordered `HashSet<u64>` to a `Vec<u64>` holding live wrapper ids in registration order (newest last). `deregister` now, when the deregistered wrapper was active, hands off to `live.last()` (the most-recently-registered survivor), falling back to `ActiveSink::FocusedWindow` only when none remain. Added `wrapper_count()` (used by TASK-10.1 status). `register`, `active`, `is_live`, and `route` semantics are unchanged.
+
+Tests added (all green): newest-of-three handoff (picks b, not a or focused-window), peel-back to focused-window only when the last wrapper exits, deregister(non-active) never changes active across three wrappers, a handoff never redirects an utterance bound to the now-dead wrapper (still Held), and wrapper_count tracking.
+
+AC #1–#4 met. `cargo test --workspace`, `cargo clippy --workspace --all-targets`, `cargo fmt --check` all green; the daemon already calls `deregister` in serve_sink so the handoff is live with no daemon change (integration coverage is TASK-11.2). Committed as aa697ef.
+<!-- SECTION:FINAL_SUMMARY:END -->
