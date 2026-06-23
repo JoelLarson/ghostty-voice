@@ -1,10 +1,10 @@
 ---
 id: TASK-11
 title: 'PRD: talk-to multi-wrapper correctness — deterministic active-sink lifecycle'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-06-22 23:25'
-updated_date: '2026-06-23 04:04'
+updated_date: '2026-06-23 04:09'
 labels:
   - prd
   - talk-to
@@ -42,9 +42,20 @@ Successful when: with two wrappers registered, closing the active one routes sub
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Deregistering the active wrapper hands off to the most-recently-registered still-live wrapper sink; the focused-window sink reactivates only when none remain
-- [ ] #2 Deregistering a non-active wrapper never changes which sink is active
-- [ ] #3 A transcript already bound to a now-dead wrapper is still Held-for-replay, never redirected (unchanged)
-- [ ] #4 Test-first unit tests (no doubles) + a daemon-level integration test cover the multi-wrapper handoff; cargo test green
-- [ ] #5 CONTEXT.md (Delivery sink) updated to describe the newest-live handoff
+- [x] #1 Deregistering the active wrapper hands off to the most-recently-registered still-live wrapper sink; the focused-window sink reactivates only when none remain
+- [x] #2 Deregistering a non-active wrapper never changes which sink is active
+- [x] #3 A transcript already bound to a now-dead wrapper is still Held-for-replay, never redirected (unchanged)
+- [x] #4 Test-first unit tests (no doubles) + a daemon-level integration test cover the multi-wrapper handoff; cargo test green
+- [x] #5 CONTEXT.md (Delivery sink) updated to describe the newest-live handoff
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+PRD complete — both issues done, Success Validation holds.
+
+- TASK-11.1 (aa697ef): pure `SinkRegistry` newest-live handoff. `live` is now a registration-ordered `Vec`; deregistering the active wrapper hands off to the most-recently-registered survivor (`live.last()`), falling back to the focused-window sink only when none remain. Added `wrapper_count()`. Chicago-style TDD, no doubles.
+- TASK-11.2 (9f6475b): daemon-level integration test `wrapper_handoff.rs` (real socket + real registry/queue/protocol) proving the handoff and the last-wrapper-exit fallback end to end; CONTEXT.md (Delivery sink) updated to the newest-live handoff.
+
+Success Validation: with two wrappers registered, closing the active one routes subsequent dictation to the other still-live wrapper (never focused-window); the focused-window sink returns only when the last wrapper exits; an utterance bound to a now-dead wrapper is still Held (proven by the unit test even when a handoff kept another wrapper active); unit + integration tests prove this, written test-first; CONTEXT.md describes the handoff. AC #1–#5 met. The running daemon already calls `deregister` in `serve_sink`, so the fix is live with no extra wiring. Out-of-scope (explicit `sink <target>` switching) untouched. `cargo test --workspace` (254), clippy, fmt green.
+<!-- SECTION:FINAL_SUMMARY:END -->
