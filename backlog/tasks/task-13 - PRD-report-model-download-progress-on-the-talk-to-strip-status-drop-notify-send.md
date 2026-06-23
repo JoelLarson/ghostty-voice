@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-06-23 05:54'
+updated_date: '2026-06-23 05:55'
 labels:
   - prd
   - needs-triage
@@ -88,3 +89,12 @@ Prior art: `crates/ghostty-voice-core/src/protocol.rs` inline tests; `crates/gho
 
 The real first-run download (network + ~3 GB model, GPU) is not exercisable in a headless/CI environment; the sync→async progress plumbing is validated by the protocol/label unit tests plus the pushed-frame integration test, and the live download path is verified by faithful wiring + reported honestly as demo-only at finalization. Domain vocabulary (Delivery sink, focused-window/wrapper sink, State, Downloading, Frame, StatusReport, status strip, Freshness window) is used throughout. The `downloading <pct>` token is additive and backward-compatible, consistent with the existing protocol-version handshake.
 <!-- SECTION:DESCRIPTION:END -->
+
+## Acceptance Criteria
+<!-- AC:BEGIN -->
+- [ ] #1 The talk-to strip shows `downloading <pct>%` live during the model download, and plain `downloading` when the total size is unknown
+- [ ] #2 `ghostty-voice-ctl status` reports the download percent (`ok downloading <pct> sink=… wrappers=…`), additive and backward-compatible with a bare `downloading`
+- [ ] #3 No `notify-send` is emitted for download progress/start/complete/failure; all non-download notifications are unchanged; download events remain in the journald log
+- [ ] #4 The percent lives in `State::Downloading(Option<u8>)` as the single source of truth feeding both `Frame::State` and `StatusReport`; the daemon updates it via `set_state` (strip and status never diverge), throttled to whole-percent changes
+- [ ] #5 All work is test-first (Chicago-style): protocol token/round-trip/label unit tests + a pushed-frame integration test; cargo test, clippy, and fmt green
+<!-- AC:END -->
