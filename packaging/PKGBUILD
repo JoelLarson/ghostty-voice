@@ -19,7 +19,7 @@ install="${pkgname}.install"
 # fetched at build time (its own large LFS-free source tree), pinned by _whisper_tag
 # for reproducibility. 'SKIP' until the tag's tarball hash is recorded for a release.
 source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver}.tar.gz")
-sha256sums=('be9c471f8454f0491d790ad268a7c546b6b3fc11063daea9e47a74e6c415277f')
+sha256sums=('fb47acfc1a0f72d8766f27e8fffd71344f6513cfdd72e3048f2c0157b229b144')
 
 # The vendored whisper.cpp Vulkan build (large; pinned tag for reproducibility).
 _whisper_url="https://github.com/ggerganov/whisper.cpp"
