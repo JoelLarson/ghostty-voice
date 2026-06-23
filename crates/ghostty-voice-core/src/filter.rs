@@ -1,4 +1,4 @@
-//! Transcript filtering (S4): discard empty audio, sub-minimum-duration
+//! Transcript filtering: discard empty audio, sub-minimum-duration
 //! recordings, and Whisper's stock silence hallucinations so nothing junk is
 //! typed.
 

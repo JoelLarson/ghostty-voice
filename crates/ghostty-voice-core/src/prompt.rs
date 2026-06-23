@@ -1,4 +1,4 @@
-//! `initial_prompt` builder (S4).
+//! `initial_prompt` builder.
 //!
 //! Whisper's `initial_prompt` is capped (~224 tokens); a growing vocab list
 //! would silently truncate past it, dropping later terms. This builder bounds

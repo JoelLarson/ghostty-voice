@@ -1,10 +1,10 @@
-//! ghostty-voiced — the supervising daemon (S3).
+//! ghostty-voiced — the supervising daemon.
 //!
 //! Owns all state: supervises whisper-server (eager start, readiness, restart
 //! with backoff, VRAM teardown on stop), listens on a Unix socket, drives the
 //! recording state machine, and performs record/transcribe/inject.
 //!
-//! Delivery (S3): the Recorder frees on stop so recordings can be fired
+//! Delivery: the Recorder frees on stop so recordings can be fired
 //! back-to-back; each utterance is cached as a WAV, enqueued into the ordered
 //! [`DeliveryQueue`], and transcribed in the background (retrying while the
 //! server is down). A single serialized drain caches each transcript to disk
@@ -59,7 +59,7 @@ struct Daemon {
     cache_root: PathBuf,
     /// Held true while a drain is in flight so typing never interleaves.
     draining: bool,
-    /// The active Continuous-mode session (S6), if any. The recorder/`current_wav`
+    /// The active Continuous-mode session, if any. The recorder/`current_wav`
     /// machinery is bypassed for continuous sessions — sox writes numbered clips
     /// into the session dir and the driver task owns the pipeline.
     continuous: Option<ContinuousSession>,
@@ -85,7 +85,7 @@ struct Daemon {
     shutting_down: bool,
 }
 
-/// State for one in-flight Continuous-mode session (S6).
+/// State for one in-flight Continuous-mode session.
 struct ContinuousSession {
     /// This session's generation; the driver task stops once it no longer
     /// matches `Daemon::continuous_gen` (cancel started/superseded the session).
@@ -164,7 +164,7 @@ async fn main() -> Result<()> {
 
     let supervisor = tokio::spawn(supervise(daemon.clone()));
 
-    // Tactile triggers (S8): read the one configured evdev device directly and
+    // Tactile triggers: read the one configured evdev device directly and
     // drive recording via the gesture mapper. `input_shutdown` lets the reader
     // thread stop reconnecting once we begin teardown.
     let input_shutdown = Arc::new(AtomicBool::new(false));
@@ -202,7 +202,7 @@ async fn main() -> Result<()> {
 // ---- supervision -----------------------------------------------------------
 
 async fn supervise(daemon: Arc<Mutex<Daemon>>) {
-    // First-run model fetch (S7): before any whisper-server spawn, ensure the
+    // First-run model fetch: before any whisper-server spawn, ensure the
     // ~3 GB model is on disk. While it downloads the daemon is in `Downloading`
     // and rejects toggle/vad/continuous (the state machine), notifying instead
     // of hanging. A failed fetch leaves the daemon in `Downloading` and retries
@@ -243,7 +243,7 @@ async fn supervise(daemon: Arc<Mutex<Daemon>>) {
     }
 }
 
-/// Ensure the model file is on disk, fetching it on first run (S7).
+/// Ensure the model file is on disk, fetching it on first run.
 ///
 /// Presence-only check (no multi-GB re-hash on every boot): if `model_path` is
 /// absent the daemon enters `Downloading`, streams the model from `model_url`
@@ -405,7 +405,7 @@ async fn handle_conn(stream: UnixStream, daemon: Arc<Mutex<Daemon>>) -> Result<(
 
     // `register-sink` is the one persistent command: the connection stays open
     // and the daemon *pushes* frames down it until the client disconnects. The
-    // client carries its PROTOCOL_VERSION (task-10.3); an incompatible version is
+    // client carries its PROTOCOL_VERSION; an incompatible version is
     // refused with an explicit `err incompatible …` so `talk-to` can show
     // `incompatible` rather than a generic offline. A legacy bare register-sink
     // (no version) is still accepted.
@@ -427,7 +427,7 @@ async fn handle_conn(stream: UnixStream, daemon: Arc<Mutex<Daemon>>) -> Result<(
         return serve_sink(reader, write_half, daemon).await;
     }
 
-    // `status` answers with the richer [`StatusReport`] (task-10.1): the daemon
+    // `status` answers with the richer [`StatusReport`]: the daemon
     // state plus the active **Delivery sink** and the registered wrapper count, so
     // a user can confirm routing without tailing journald. It is always allowed
     // and read-only, so reading state directly matches the machine's status no-op.
@@ -447,7 +447,7 @@ async fn handle_conn(stream: UnixStream, daemon: Arc<Mutex<Daemon>>) -> Result<(
 }
 
 /// Snapshot the daemon state and the active **Delivery sink** into a
-/// [`StatusReport`] (task-10.1): which sink kind is active (focused-window vs
+/// [`StatusReport`]: which sink kind is active (focused-window vs
 /// wrapper) and how many wrapper sinks are registered.
 async fn status_report(daemon: &Arc<Mutex<Daemon>>) -> StatusReport {
     let d = daemon.lock().await;
@@ -465,7 +465,7 @@ async fn status_report(daemon: &Arc<Mutex<Daemon>>) -> StatusReport {
 /// Serve a registered **wrapper sink** (`talk-to`, IDEAS.md #4) on a persistent
 /// connection. Registration makes this the active Delivery sink; the daemon then
 /// pushes [`Frame`]s — `state` changes (from the watch channel) for the status
-/// strip and `transcript` deliveries (from this sink's mpsc, slice 4) — until the
+/// strip and `transcript` deliveries (from this sink's mpsc) — until the
 /// client disconnects, at which point the focused-window sink reactivates.
 async fn serve_sink(
     mut reader: BufReader<OwnedReadHalf>,
@@ -566,7 +566,7 @@ async fn apply_command(command: Command, daemon: &Arc<Mutex<Daemon>>) -> Respons
 
 // ---- tactile input (evdev) -------------------------------------------------
 
-/// Wire up the evdev trigger path (S8): a blocking reader thread owns the device
+/// Wire up the evdev trigger path: a blocking reader thread owns the device
 /// and the pure key-tracker, forwarding `ButtonEvent`s over a channel to an async
 /// handler that maps them (against current state) into daemon commands.
 fn spawn_input_listener(daemon: Arc<Mutex<Daemon>>, shutdown: Arc<AtomicBool>) {
@@ -738,7 +738,7 @@ async fn perform(d: &mut Daemon, daemon: &Arc<Mutex<Daemon>>, action: Action) ->
 /// How many trailing transcript words seed the next clip's `initial_prompt`.
 const CLIP_CHAIN_WORDS: usize = 24;
 
-/// Start a Continuous-mode session (S6): make a fresh clip dir, launch `sox`
+/// Start a Continuous-mode session: make a fresh clip dir, launch `sox`
 /// to spray numbered silence-bounded clips into it, and spawn the driver task
 /// that watches the dir, transcribes finalized clips serially (context-chained),
 /// and on the long session-end silence assembles and delivers once.
@@ -773,7 +773,7 @@ fn start_continuous(d: &mut Daemon, daemon: &Arc<Mutex<Daemon>>) -> Result<()> {
 /// each finalized clip in strict order (seeded with the running transcript tail),
 /// and end the session on `session_end_silence` of no progress — stopping sox,
 /// transcribing any remaining clips, then delivering the assembled transcript
-/// exactly once through the S3 delivery queue. Retires immediately if the
+/// exactly once through the delivery queue. Retires immediately if the
 /// session is cancelled (generation bumped) or the daemon shuts down.
 async fn drive_continuous(daemon: Arc<Mutex<Daemon>>, generation: u64) {
     let mut session = ghostty_voice_core::session::Session::new(CLIP_CHAIN_WORDS);
@@ -890,7 +890,7 @@ fn clip_path(dir: &Path, n: usize) -> PathBuf {
     dir.join(format!("clip-{n:02}.wav"))
 }
 
-/// Transcribe one continuous clip with the S4 accuracy stack, overriding the
+/// Transcribe one continuous clip with the accuracy stack, overriding the
 /// `initial_prompt` to chain the running session transcript tail for cross-clip
 /// context. Empty/hallucination/sub-min clips return an empty string (dropped
 /// from assembly). The clip WAV is removed after transcription.
@@ -957,7 +957,7 @@ async fn transcribe_clip(
 }
 
 /// Finish a Continuous-mode session: stop sox, clear the session state, bin the
-/// clip dir, and deliver the assembled transcript exactly once through the S3
+/// clip dir, and deliver the assembled transcript exactly once through the
 /// delivery queue (cache-before-type ⇒ hands-free auto-type). An empty assembly
 /// (all-silence session) delivers nothing — just the done cue.
 async fn end_continuous(

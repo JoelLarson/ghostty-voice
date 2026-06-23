@@ -1,4 +1,4 @@
-//! Integration test for the S4 accuracy path against sample WAVs.
+//! Integration test for the accuracy path against sample WAVs.
 //!
 //! Exercises the real composition the daemon's transcribe path runs — a real
 //! WAV measured by `audio::wav_duration`, a real `post_inference` round-trip

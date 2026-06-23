@@ -1,4 +1,4 @@
-//! Integration test: the **newest-live handoff** (task-11). With two `talk-to`
+//! Integration test: the **newest-live handoff**. With two `talk-to`
 //! **wrapper sinks** registered, closing the *active* one hands the active
 //! **Delivery sink** off to the still-live wrapper — never down to the
 //! **focused-window sink** while a wrapper remains — and a transcript bound

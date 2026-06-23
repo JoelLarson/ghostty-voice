@@ -1,10 +1,10 @@
-//! ghostty-voice S1 walking skeleton.
+//! ghostty-voice walking skeleton.
 //!
 //! Record one utterance, transcribe it via a manually-started warm
 //! whisper-server, and type the transcript into the focused window. No daemon,
-//! no supervision, no accuracy stack — those are S2+. The point of this slice
-//! is to prove Vulkan transcription and ydotool injection end-to-end and to
-//! capture a real warm-latency number.
+//! no supervision, no accuracy stack — those come later. The point of this
+//! skeleton is to prove Vulkan transcription and ydotool injection end-to-end
+//! and to capture a real warm-latency number.
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -16,10 +16,7 @@ use ghostty_voice_core::transcript::parse_transcript;
 use ghostty_voice_io::{audio, inject, transcribe};
 
 #[derive(Parser)]
-#[command(
-    name = "ghostty-voice",
-    about = "Voice dictation walking skeleton (S1)"
-)]
+#[command(name = "ghostty-voice", about = "Voice dictation walking skeleton")]
 struct Cli {
     /// Path to config.toml (default: ~/.config/ghostty-voice/config.toml).
     #[arg(long)]
@@ -37,7 +34,7 @@ fn main() -> Result<()> {
     let wav = std::env::temp_dir().join("ghostty-voice-s1.wav");
     audio::record_to_wav(&cfg.audio.device, &wav)?;
 
-    // Time the round-trip — this is the S1 warm-latency measurement.
+    // Time the round-trip — this is the warm-latency measurement.
     let started = Instant::now();
     let params = transcribe::InferenceParams::from_whisper_config(&cfg.whisper);
     let body = transcribe::post_inference(&cfg.whisper.host, cfg.whisper.port, &wav, &params)?;

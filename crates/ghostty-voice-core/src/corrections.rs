@@ -1,4 +1,4 @@
-//! Correction dictionary (S4) — a deterministic jargon spell-fixer.
+//! Correction dictionary — a deterministic jargon spell-fixer.
 //!
 //! Case-insensitive (ASCII), whole-word find/replace for terms Whisper
 //! reliably mishears the same way (`"why do tool" → "ydotool"`). Explicitly

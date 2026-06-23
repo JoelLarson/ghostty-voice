@@ -1,4 +1,4 @@
-//! Wire protocol for the control socket (S2).
+//! Wire protocol for the control socket.
 //!
 //! Newline-delimited UTF-8. A request is one command word; a response is one
 //! line: `ok <state>` or `err <message>`. Deliberately dumb-simple — no JSON
@@ -6,7 +6,7 @@
 
 /// The control-socket protocol version, exchanged at `register-sink` time so a
 /// `talk-to` **wrapper sink** can tell an *incompatible* daemon apart from an
-/// unreachable one (task-10.3). Bump this whenever the wrapper-sink wire contract
+/// unreachable one. Bump this whenever the wrapper-sink wire contract
 /// (the `register-sink` handshake or the pushed [`Frame`]s) changes incompatibly.
 pub const PROTOCOL_VERSION: u32 = 1;
 
@@ -18,20 +18,20 @@ pub fn version_compatible(client: u32, daemon: u32) -> bool {
     client == daemon
 }
 
-/// A command sent by `ghostty-voice-ctl` to the daemon (S2 subset).
+/// A command sent by `ghostty-voice-ctl` to the daemon.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
     Toggle,
-    /// Start a hands-free VAD recording (sox auto-stops on first silence, S5).
+    /// Start a hands-free VAD recording (sox auto-stops on first silence).
     Vad,
-    /// Start a hands-free Continuous-mode session (S6): short pauses cut clips
+    /// Start a hands-free Continuous-mode session: short pauses cut clips
     /// that batch-transcribe in the background; a long silence ends the session
     /// and delivers the assembled transcript. `cancel` aborts the whole session.
     Continuous,
     Cancel,
     Status,
     Reload,
-    /// Re-inject the most-recent cached transcript (recovery-only, S3).
+    /// Re-inject the most-recent cached transcript (recovery-only).
     ReplayLast,
     /// Register the connecting client as a **wrapper sink** (`talk-to`, IDEAS.md
     /// #4). Unlike every other command this does not get a one-shot reply: the
@@ -39,17 +39,17 @@ pub enum Command {
     /// client disconnects, at which point the focused-window sink reactivates.
     ///
     /// Carries the client's [`PROTOCOL_VERSION`] (`register-sink <version>`) so an
-    /// incompatible daemon can be detected (task-10.3). `None` is a legacy bare
+    /// incompatible daemon can be detected. `None` is a legacy bare
     /// `register-sink` (a pre-handshake `talk-to`), which the daemon still accepts.
     RegisterSink(Option<u32>),
 }
 
 /// The daemon's observable state. `Downloading` is the first-run window while
-/// the ~3 GB model is fetched (S7) — it precedes `Loading`, the window while the
+/// the ~3 GB model is fetched — it precedes `Loading`, the window while the
 /// model loads into VRAM, which in turn precedes `Idle` (ready).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
-    /// First-run model download in progress (S7). Distinct from `Loading`:
+    /// First-run model download in progress. Distinct from `Loading`:
     /// nothing is in VRAM yet, the fetch is on the network, and it can take
     /// minutes. Like `Loading`, only `status` is answered while downloading.
     Downloading,
@@ -182,7 +182,7 @@ impl Response {
     }
 }
 
-/// Which kind of **Delivery sink** is active, for the `status` report (task-10.1).
+/// Which kind of **Delivery sink** is active, for the `status` report.
 /// Exactly one sink is active at a time (CONTEXT.md): the default
 /// **focused-window sink** or a **wrapper sink** (a running `talk-to`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -211,7 +211,7 @@ impl SinkKind {
 }
 
 /// The `status` reply: the daemon state plus which **Delivery sink** is active and
-/// how many **wrapper sinks** are registered (task-10.1). Lets a user confirm
+/// how many **wrapper sinks** are registered. Lets a user confirm
 /// routing — wrapper sink vs focused-window sink — without tailing journald.
 ///
 /// Encoded **additively** on the existing `ok <state>` line so it stays
@@ -309,7 +309,7 @@ mod tests {
         );
     }
 
-    // ---- push-sink protocol (slice 3) -----------------------------------
+    // ---- push-sink protocol -----------------------------------
 
     #[test]
     fn parses_a_bare_register_sink_as_a_legacy_no_version_registration() {
@@ -405,7 +405,7 @@ mod tests {
         assert!(Frame::parse("frobnicate now").is_err());
     }
 
-    // ---- status report: active Delivery sink + wrapper count (task-10.1) -----
+    // ---- status report: active Delivery sink + wrapper count -----
 
     #[test]
     fn sink_kind_round_trips_through_its_wire_token() {

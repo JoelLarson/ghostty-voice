@@ -25,7 +25,7 @@ pub struct Config {
 }
 
 /// `[whisper]` — how to reach and pin the transcription server, plus the
-/// accuracy-stack request params (S4).
+/// accuracy-stack request params.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct WhisperConfig {
@@ -36,19 +36,19 @@ pub struct WhisperConfig {
     pub port: u16,
     /// Raw path; may begin with `~` (expanded at the IO boundary).
     pub model_path: String,
-    /// First-run download source (S7): where `ggml-large-v3.bin` is fetched
+    /// First-run download source: where `ggml-large-v3.bin` is fetched
     /// from if `model_path` is missing. Defaults to the HuggingFace LFS object.
     pub model_url: String,
-    /// First-run download integrity (S7): expected SHA-256 of the model file
+    /// First-run download integrity: expected SHA-256 of the model file
     /// (lowercase hex), or empty to skip verification. Pin from HuggingFace.
     pub model_sha256: String,
     /// PCI address of the GPU to pin (ADR-0001).
     pub vulkan_device: String,
     /// Extra launch flags passed through to whisper-server.
     pub extra_args: Vec<String>,
-    /// Decoder beam width (S4): larger beam buys accuracy on ambiguous audio.
+    /// Decoder beam width: larger beam buys accuracy on ambiguous audio.
     pub beam_size: u32,
-    /// Sampling temperature (S4): `0.0` for deterministic decoding.
+    /// Sampling temperature: `0.0` for deterministic decoding.
     pub temperature: f64,
     /// `initial_prompt` prefix sentence; the `vocab` terms are appended after
     /// `" Vocabulary:"` by the bounded prompt builder.
@@ -66,24 +66,24 @@ pub struct AudioConfig {
     /// Safety cap (~900 s): on expiry the recorder stops + enqueues so a
     /// forgotten recording can't run away. Also backstops a VAD "never speak".
     pub max_recording_seconds: u64,
-    /// VAD mode (S5): seconds of trailing silence below `vad_threshold_pct`
+    /// VAD mode: seconds of trailing silence below `vad_threshold_pct`
     /// after which `sox` self-terminates the recording. Real-mic tunable.
     pub vad_silence_seconds: f32,
-    /// VAD mode (S5): the `sox` `silence` threshold as a percentage of full
+    /// VAD mode: the `sox` `silence` threshold as a percentage of full
     /// scale; audio below this counts as silence. Real-mic tunable.
     pub vad_threshold_pct: u32,
     /// Recordings shorter than this are discarded (accidental blips type
     /// nothing). Default 0.3 s.
     pub min_duration_seconds: f64,
-    /// Continuous mode (S6): a pause this long (below `vad_threshold_pct`) cuts
+    /// Continuous mode: a pause this long (below `vad_threshold_pct`) cuts
     /// the current clip and starts the next. Shorter than `session_end` — the
     /// clip-cut threshold of the dual-threshold split. Real-mic tunable.
     pub clip_cut_pause_seconds: f32,
-    /// Continuous mode (S6): a trailing silence this long ends the whole session
+    /// Continuous mode: a trailing silence this long ends the whole session
     /// and delivers the assembled transcript hands-free (~10 s). The session-end
     /// threshold of the dual-threshold split. Real-mic tunable.
     pub session_end_silence_seconds: f32,
-    /// Continuous mode (S6): clips shorter than this are accumulated into the
+    /// Continuous mode: clips shorter than this are accumulated into the
     /// next rather than transcribed alone, so stutters and micro-pauses don't
     /// spray tiny hallucination-prone fragments at Whisper (~2-3 s).
     pub min_clip_seconds: f32,
@@ -96,7 +96,7 @@ pub struct InjectConfig {
     pub key_delay_ms: u32,
 }
 
-/// `[input]` — evdev tactile triggers (S8). The two configurable combos drive
+/// `[input]` — evdev tactile triggers. The two configurable combos drive
 /// recording directly via `/dev/input`, replacing the GNOME hotkey path:
 /// **Start** tap latches / hold is push-to-talk; **Stop** tap stops / hold
 /// starts a VAD recording. `hold_threshold_ms` is the tap-vs-hold cutoff, and
@@ -272,7 +272,7 @@ mod tests {
             "Transcript of technical instructions."
         );
         assert_eq!(cfg.whisper.vocab, Vec::<String>::new());
-        // First-run download (S7): the model URL defaults to the HF LFS object,
+        // First-run download: the model URL defaults to the HF LFS object,
         // and the expected SHA is unset (verification deferred until pinned).
         assert_eq!(
             cfg.whisper.model_url,
@@ -289,7 +289,7 @@ mod tests {
         assert_eq!(cfg.audio.min_clip_seconds, 2.0);
         assert!(cfg.corrections.is_empty());
         assert_eq!(cfg.inject.key_delay_ms, 12);
-        // [input] (S8): the shipped tactile defaults.
+        // [input]: the shipped tactile defaults.
         assert_eq!(cfg.input.start_combo, "Shift+F10");
         assert_eq!(cfg.input.stop_combo, "Shift+F9");
         assert_eq!(cfg.input.hold_threshold_ms, 250);

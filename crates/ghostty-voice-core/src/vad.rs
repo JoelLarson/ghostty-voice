@@ -1,4 +1,4 @@
-//! VAD recording arguments (S5).
+//! VAD recording arguments.
 //!
 //! Builds the `sox` `silence` effect that auto-stops on trailing silence. The
 //! config-driven part (threshold, silence duration) is here and tested; the
@@ -27,7 +27,7 @@ pub fn record_args(out: &str, silence_seconds: f32, threshold_pct: u32) -> Vec<S
     argv
 }
 
-/// The continuous-mode (S6) split effect: cut the current clip after
+/// The continuous-mode split effect: cut the current clip after
 /// `clip_pause_seconds` below `threshold_pct`%, then `: newfile : restart` so
 /// `sox` opens the next numbered clip and keeps recording the same session —
 /// one long capture sprayed into silence-bounded clips. The daemon watches the
@@ -102,7 +102,7 @@ mod tests {
         assert_eq!(argv[argv.len() - 7], "silence");
     }
 
-    // ---- continuous-mode multi-clip split (S6) --------------------------
+    // ---- continuous-mode multi-clip split --------------------------
 
     #[test]
     fn split_effect_cuts_on_clip_pause_and_restarts() {

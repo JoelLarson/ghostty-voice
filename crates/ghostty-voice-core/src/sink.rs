@@ -9,7 +9,7 @@
 //! Switching is sequential, never concurrent: launching a wrapper makes its sink
 //! active (lifecycle-implicit switching — there is no explicit switch command in
 //! v1). When the active wrapper deregisters or dies, the **most-recently-registered
-//! still-live** wrapper sink takes over (the newest-live handoff, task-11); the
+//! still-live** wrapper sink takes over (the newest-live handoff); the
 //! focused-window sink reactivates only when the **last** wrapper exits. An
 //! utterance's target sink is **bound when it is triggered**,
 //! and is never silently redirected: if the bound wrapper sink is gone at
@@ -48,7 +48,7 @@ pub enum Route {
 /// Tracks registered wrapper sinks and which single sink is active.
 ///
 /// `live` holds the live wrapper ids in **registration order** (oldest first,
-/// newest last) so the newest-live handoff (task-11) can pick the
+/// newest last) so the newest-live handoff can pick the
 /// most-recently-registered survivor when the active wrapper leaves.
 #[derive(Debug)]
 pub struct SinkRegistry {
@@ -105,7 +105,7 @@ impl SinkRegistry {
     }
 
     /// How many **wrapper sinks** are currently registered (live). Surfaced by
-    /// `ghostty-voice-ctl status` (task-10.1).
+    /// `ghostty-voice-ctl status`.
     pub fn wrapper_count(&self) -> usize {
         self.live.len()
     }
@@ -181,7 +181,7 @@ mod tests {
 
     #[test]
     fn deregistering_the_active_wrapper_hands_off_to_the_newest_live_wrapper() {
-        // Multi-wrapper correctness (task-11): with several wrappers registered,
+        // Multi-wrapper correctness: with several wrappers registered,
         // closing the active one hands off to the most-recently-registered
         // still-live wrapper — NOT down to the focused-window sink, and NOT to the
         // oldest survivor. Three wrappers prove it picks the newest survivor (b),
@@ -257,7 +257,7 @@ mod tests {
 
     #[test]
     fn wrapper_count_tracks_the_number_of_live_wrappers() {
-        // Surfaced by `status` (task-10.1): how many wrapper sinks are registered.
+        // Surfaced by `status`: how many wrapper sinks are registered.
         let mut r = SinkRegistry::new();
         assert_eq!(r.wrapper_count(), 0);
         let a = r.register();

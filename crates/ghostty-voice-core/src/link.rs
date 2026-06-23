@@ -1,4 +1,4 @@
-//! The `talk-to` **wrapper sink**'s link state to the daemon (task-10).
+//! The `talk-to` **wrapper sink**'s link state to the daemon.
 //!
 //! The status strip normally shows the daemon's voice [`State`](crate::protocol::State)
 //! (`idle`/`recording`/`transcribing`), pushed over a healthy registered
@@ -26,7 +26,7 @@ pub enum LinkState {
     /// `register-sink` (a new daemon answering `err incompatible …`), or it is too
     /// old to understand the command at all (answering `err unknown command …`).
     /// Distinct from `unreachable` so a stale daemon after an upgrade is legible
-    /// (task-10.3) — the remedy is to restart/upgrade the daemon.
+    /// — the remedy is to restart/upgrade the daemon.
     Incompatible,
     /// The connection had registered and was then dropped (EOF) — the daemon went
     /// away after a previously-good connection.

@@ -1,5 +1,5 @@
 //! Integration test: `status` reports the active **Delivery sink** and the
-//! registered **wrapper sink** count (task-10.1) over a real socket — so a user
+//! registered **wrapper sink** count over a real socket — so a user
 //! can confirm routing (wrapper sink vs focused-window sink) without tailing
 //! journald.
 //!

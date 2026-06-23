@@ -1,4 +1,4 @@
-//! Key-combo parsing and matching (evdev input layer, S8).
+//! Key-combo parsing and matching (evdev input layer).
 //!
 //! A combo such as `Shift+F10` is a main key plus a set of required modifiers.
 //! Parsing turns the human string into evdev keycodes (the same numbers as

@@ -1,4 +1,4 @@
-//! Audio-cue source resolution (S7).
+//! Audio-cue source resolution.
 //!
 //! The start/stop cues can come from two sources, decided here as pure logic so
 //! the IO adapter stays a dumb dispatcher:
@@ -8,7 +8,7 @@
 //!   freedesktop sound theme and plays via `paplay`; no binary assets to ship;
 //! - an explicit **sound file** path, played via `paplay <path>`.
 //!
-//! Both play through `paplay` (PipeWire) — `libcanberra` is gone (S8). The config
+//! Both play through `paplay` (PipeWire) — `libcanberra` is gone. The config
 //! value selects the source: a `theme:` prefix (or a bare event id with no path
 //! separator) is a theme event; anything that looks like a path is a file. An
 //! empty value disables the cue.

@@ -1,4 +1,4 @@
-//! First-run model-download boundary adapter (S7).
+//! First-run model-download boundary adapter.
 //!
 //! Fetches `ggml-large-v3.bin` (the ~3 GB model the package deliberately omits)
 //! over HTTP, streaming to a temp file while computing its SHA-256, then

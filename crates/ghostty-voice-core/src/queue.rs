@@ -1,4 +1,4 @@
-//! Ordered delivery queue (S3) — the pure ordering core.
+//! Ordered delivery queue — the pure ordering core.
 //!
 //! Utterances are delivered in strict record-order with no interleaving: the
 //! head utterance must reach a terminal state (typed, dropped, or held) before

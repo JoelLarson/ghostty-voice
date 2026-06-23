@@ -1,4 +1,4 @@
-//! Environment diagnostics (S7, extended in S8).
+//! Environment diagnostics.
 //!
 //! The `doctor` command probes the environment (ydotoold socket, `input` group,
 //! `/dev/uinput`, and the evdev trigger device) and reports actionable problems.
@@ -25,7 +25,7 @@ pub struct Probes {
     pub ydotool_socket_exists: bool,
     pub in_input_group: bool,
     pub uinput_present: bool,
-    /// The configured evdev trigger device could be opened (S8): without it the
+    /// The configured evdev trigger device could be opened: without it the
     /// tactile Start/Stop keys can't be read.
     pub trigger_device_readable: bool,
 }

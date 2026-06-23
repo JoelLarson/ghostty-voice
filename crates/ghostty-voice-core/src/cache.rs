@@ -1,4 +1,4 @@
-//! Cache retention policy (S3).
+//! Cache retention policy.
 //!
 //! The WAV and transcript caches are count-capped: on each new entry the
 //! oldest beyond the cap are pruned. Entries are named by ISO timestamp, so a

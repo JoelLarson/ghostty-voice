@@ -1,4 +1,4 @@
-//! Timestamped key-tracker (evdev input layer, S8).
+//! Timestamped key-tracker (evdev input layer).
 //!
 //! The pure heart of the timing logic. The IO boundary owns the device and
 //! supplies *timestamped* raw key events ([`RawKeyEvent`]); this tracks modifier

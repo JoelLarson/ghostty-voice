@@ -1,4 +1,4 @@
-//! The daemon's recording state machine (S3 — Recorder + delivery queue).
+//! The daemon's recording state machine (Recorder + delivery queue).
 //!
 //! The Recorder is the single mic facility: `Idle` or `Recording`. Stopping a
 //! recording enqueues the utterance and returns to `Idle` immediately, so a new
@@ -17,9 +17,9 @@ pub enum Action {
     None,
     StartRecording,
     /// Start a hands-free VAD recording: `sox` records and self-terminates on
-    /// the first trailing silence, then enqueues like any other utterance (S5).
+    /// the first trailing silence, then enqueues like any other utterance.
     StartVadRecording,
-    /// Start a hands-free Continuous-mode session (S6): `sox` splits the capture
+    /// Start a hands-free Continuous-mode session: `sox` splits the capture
     /// into silence-bounded clips that batch-transcribe in the background; a long
     /// silence ends the session and delivers the assembled transcript. `cancel`
     /// (DiscardRecording) aborts the whole session.
@@ -30,7 +30,7 @@ pub enum Action {
     StopAndEnqueue,
     DiscardRecording,
     ReloadConfig,
-    /// Re-inject the most-recent cached transcript (recovery-only, S3).
+    /// Re-inject the most-recent cached transcript (recovery-only).
     ReplayLast,
 }
 
@@ -179,7 +179,7 @@ mod tests {
 
     #[test]
     fn continuous_starts_a_session_from_idle() {
-        // Continuous mode (S6) opens a hands-free session: sox splits the
+        // Continuous mode opens a hands-free session: sox splits the
         // capture into clips that transcribe in the background. The recorder
         // goes to Recording, exactly like the other start paths.
         let t = apply(State::Idle, Command::Continuous);
@@ -267,7 +267,7 @@ mod tests {
 
     #[test]
     fn downloading_rejects_recording_commands_with_a_clear_message() {
-        // First-run model download (S7): toggle/vad/continuous must be rejected
+        // First-run model download: toggle/vad/continuous must be rejected
         // (the daemon notifies "model still downloading"), never hang or start a
         // recording with no model to transcribe against.
         for cmd in [Command::Toggle, Command::Vad, Command::Continuous] {

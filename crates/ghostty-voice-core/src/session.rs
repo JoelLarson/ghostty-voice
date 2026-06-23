@@ -1,4 +1,4 @@
-//! Continuous-mode session logic (S6) — the pure core.
+//! Continuous-mode session logic — the pure core.
 //!
 //! A Session is an ordered sequence of silence-bounded Clips. Short pauses cut
 //! clips; a long silence ends the session. Clip transcripts are assembled, in

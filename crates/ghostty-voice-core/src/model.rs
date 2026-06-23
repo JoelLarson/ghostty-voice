@@ -1,4 +1,4 @@
-//! First-run model-presence and integrity logic (S7).
+//! First-run model-presence and integrity logic.
 //!
 //! The ~3 GB `ggml-large-v3.bin` is **not** shipped in the package — the daemon
 //! fetches it on first run. This module is the pure decision layer over that:

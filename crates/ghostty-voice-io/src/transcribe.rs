@@ -1,7 +1,7 @@
 //! Transcription transport boundary adapter.
 //!
 //! POSTs a WAV to whisper-server's `/inference` endpoint as multipart form
-//! data — together with the S4 accuracy-stack request params (`beam_size`,
+//! data — together with the accuracy-stack request params (`beam_size`,
 //! `temperature`, `initial_prompt`) — and returns the raw JSON response body
 //! for the core parser.
 
@@ -15,7 +15,7 @@ use ghostty_voice_core::prompt::build_initial_prompt;
 const INITIAL_PROMPT_TOKEN_CAP: usize = 224;
 
 /// whisper-server `/inference` request params beyond the WAV itself. The
-/// accuracy stack (S4): a larger beam, deterministic temperature, and an
+/// accuracy stack: a larger beam, deterministic temperature, and an
 /// `initial_prompt` that biases the decoder toward the domain vocabulary.
 #[derive(Debug, Clone)]
 pub struct InferenceParams {

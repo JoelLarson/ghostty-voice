@@ -1,4 +1,4 @@
-//! Audio-cue boundary adapter (S3/S7).
+//! Audio-cue boundary adapter.
 //!
 //! Plays the hot-path start/stop cues. A start cue fires when recording begins
 //! ("now listening"); the stop cue fires when recording ends and on an
@@ -6,11 +6,11 @@
 //! sound. An empty configured value means "no cue": a deliberate no-op, never an
 //! error, so disabling a cue never breaks delivery.
 //!
-//! The cue source (S7) is resolved by pure core logic
+//! The cue source is resolved by pure core logic
 //! ([`ghostty_voice_core::cue`]): a freedesktop **theme event** (default,
 //! asset-free) resolves to its `.oga` under the freedesktop sound theme and is
 //! played via `paplay`; an explicit **file** path is played via `paplay` too.
-//! Everything goes through `paplay` (PipeWire) — no `libcanberra` (S8). This
+//! Everything goes through `paplay` (PipeWire) — no `libcanberra`. This
 //! adapter is the dumb dispatcher.
 
 use std::ffi::OsString;
@@ -78,7 +78,7 @@ mod tests {
 
     #[test]
     fn a_theme_event_maps_to_its_freedesktop_oga_via_paplay() {
-        // No libcanberra (S8): a theme event id resolves to its .oga and plays
+        // No libcanberra: a theme event id resolves to its .oga and plays
         // through paplay like any other file.
         let (prog, args) = command_for(&CueSource::ThemeEvent("bell".into())).unwrap();
         assert_eq!(prog, "paplay");

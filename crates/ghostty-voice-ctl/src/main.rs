@@ -2,7 +2,7 @@
 //!
 //! Manual commands connect to the daemon's Unix socket, write one command word,
 //! print the reply line, and exit. The everyday triggers are tactile (evdev,
-//! read by the daemon — see S8; configured in `[input]`); `doctor` diagnoses the
+//! read by the daemon; configured in `[input]`); `doctor` diagnoses the
 //! environment.
 
 use std::io::{Read, Write};

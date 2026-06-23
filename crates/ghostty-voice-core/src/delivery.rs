@@ -1,4 +1,4 @@
-//! Delivery decision (S3).
+//! Delivery decision.
 //!
 //! The hands-free rule: a transcript is auto-typed if it's still fresh — i.e.
 //! produced within the freshness window of the recording ending — otherwise it

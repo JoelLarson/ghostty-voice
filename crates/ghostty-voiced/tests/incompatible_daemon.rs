@@ -1,4 +1,4 @@
-//! Integration test: the `register-sink` **version handshake** (task-10.3) lets a
+//! Integration test: the `register-sink` **version handshake** lets a
 //! `talk-to` **wrapper sink** tell an *incompatible* daemon apart from an
 //! unreachable one. A client sends its `PROTOCOL_VERSION`; a daemon that speaks a
 //! different version refuses with an explicit `err incompatible …`, and an old

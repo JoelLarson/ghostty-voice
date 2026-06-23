@@ -1,4 +1,4 @@
-//! Post-transcription accuracy pipeline (S4).
+//! Post-transcription accuracy pipeline.
 //!
 //! The single pure decision the daemon makes after whisper-server replies:
 //! discard junk (empty audio, sub-min-duration blips, known hallucinations) so

@@ -57,7 +57,7 @@ pub fn spawn_vad_recorder(
         .context("failed to start sox (is sox installed?)")
 }
 
-/// Start a continuous-mode (S6) session capture from `device` into the clip
+/// Start a continuous-mode session capture from `device` into the clip
 /// `out_template` (a path with `%n`, e.g. `<dir>/clip-%n.wav`, that `sox`
 /// expands to the clip index). `sox` records one long session and splits it
 /// into numbered, silence-bounded clips via `silence ... : newfile : restart`,
@@ -93,7 +93,7 @@ pub fn stop_recorder(child: &mut Child) -> Result<()> {
     Ok(())
 }
 
-/// Record until the user presses Enter (the S1 standalone flow).
+/// Record until the user presses Enter (the standalone flow).
 pub fn record_to_wav(device: &str, out: &Path) -> Result<()> {
     let mut child = spawn_recorder(device, out)?;
     println!("● Recording — press Enter to stop.");
@@ -103,7 +103,7 @@ pub fn record_to_wav(device: &str, out: &Path) -> Result<()> {
 }
 
 /// Audio duration of a 16 kHz mono s16 WAV, read from its `data` chunk size.
-/// Used by the daemon to apply the sub-min-duration filter (S4) without a full
+/// Used by the daemon to apply the sub-min-duration filter without a full
 /// WAV decoder. The pure length-from-bytes math lives in core
 /// (`filter::pcm_duration`); this is just the RIFF `data`-chunk scan.
 pub fn wav_duration(wav: &Path) -> Result<Duration> {

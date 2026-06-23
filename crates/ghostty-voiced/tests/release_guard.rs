@@ -1,6 +1,6 @@
-//! Test the binary-completeness guard script (`packaging/check-package-binaries.sh`,
-//! TASK-12.2): it must pass when all four binaries are present in an install root
-//! and fail — naming the missing one — when any is absent. Run from the test
+//! Test the binary-completeness guard script (`packaging/check-package-binaries.sh`):
+//! it must pass when all four binaries are present in an install root and fail —
+//! naming the missing one — when any is absent. Run from the test
 //! suite so the release guard's logic stays green in CI-equivalent.
 //!
 //! This shells out to the real script (the script is the single source of the

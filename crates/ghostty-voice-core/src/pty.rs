@@ -3,7 +3,7 @@
 //! The proxy itself is OS glue (forkpty / termios / poll — not unit-tested);
 //! the *decisions* it makes are pure and live here so they're testable with
 //! real objects (Chicago-style, no doubles). Two rules matter for the tracer
-//! bullet (slice 1):
+//! bullet:
 //!
 //! - **argv split** — `talk-to <program> [args...]` separates the wrapped
 //!   program from its arguments. SSH is not special: `talk-to ssh host claude`
@@ -11,8 +11,8 @@
 //! - **the injection invariant** — bytes written into the child PTY never carry
 //!   a trailing newline, so the human still reviews and presses Enter. This is
 //!   **Auto-type** into a **wrapper sink** (CONTEXT.md): deliver as if typed,
-//!   never submit. The debug string in slice 1 and the **Transcript** in slice
-//!   4 both go through this rule.
+//!   never submit. The debug string and the **Transcript** both go through this
+//!   rule.
 
 /// Why `talk-to`'s arguments could not be turned into a command to wrap.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,7 +38,7 @@ pub fn split_command(args: &[String]) -> Result<(&str, &[String]), PtyError> {
 /// returns / newlines stripped.
 ///
 /// This is the load-bearing **review-before-Enter** invariant: injected text
-/// (the debug string in slice 1, a **Transcript** in slice 4) arrives exactly
+/// (the debug string, a **Transcript**) arrives exactly
 /// as if typed but is *never* submitted for you. Internal newlines and trailing
 /// spaces are preserved — only a trailing `\r`/`\n` (which would press Enter) is
 /// removed.

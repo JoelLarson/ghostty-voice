@@ -1,4 +1,4 @@
-//! whisper-server supervision policy (S2).
+//! whisper-server supervision policy.
 //!
 //! The async spawn/kill/probe loop lives in the daemon; the *policy* — how
 //! long to wait before each restart after the child dies — lives here, pure

@@ -1,4 +1,4 @@
-//! Filesystem cache adapter (S3).
+//! Filesystem cache adapter.
 //!
 //! Persists WAV recordings and transcripts under the XDG cache dir with
 //! ISO-timestamp names (`recordings/`, `transcripts/`), count-cap pruned on each

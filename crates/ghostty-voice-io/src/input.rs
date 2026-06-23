@@ -1,4 +1,4 @@
-//! evdev input boundary (S8).
+//! evdev input boundary.
 //!
 //! Reads key events directly from one `/dev/input` device — beneath the
 //! compositor, so triggers work on any Wayland compositor (or X), not just

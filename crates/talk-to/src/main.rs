@@ -1,12 +1,12 @@
 //! talk-to — a PTY wrapper that injects voice into a wrapped agent (IDEAS.md #4).
 //!
-//! Slice 1 (tracer bullet): spawn `<command>` on a pseudo-terminal, forward
-//! bytes verbatim in raw mode, track terminal resize onto the child winsize, and
-//! on a debug key inject a HARDCODED string into the child's PTY input with NO
-//! trailing newline (review-before-Enter). No daemon coupling yet — this proves
-//! PTY + transparent passthrough + injection + SSH in isolation. The wrapped
-//! command is just a command, so `talk-to ssh host claude` works unchanged:
-//! injected bytes ride the existing ssh stdin pipe to the remote agent.
+//! Spawns `<command>` on a pseudo-terminal, forwards bytes verbatim in raw mode,
+//! tracks terminal resize onto the child winsize, paints a bottom voice-status
+//! strip, and registers with the daemon as a **wrapper sink** so finished
+//! Transcripts are injected into the child's PTY with NO trailing newline
+//! (review-before-Enter). The wrapped command is just a command, so
+//! `talk-to ssh host claude` works unchanged: injected bytes ride the existing
+//! ssh stdin pipe to the remote agent.
 //!
 //! This binary is the OS-glue boundary (forkpty / termios / poll); the pure
 //! decisions it makes live in `ghostty_voice_core::pty` and are unit-tested.
@@ -34,9 +34,10 @@ const STDOUT: RawFd = libc::STDOUT_FILENO;
 const STRIP_HEIGHT: u16 = 1;
 
 /// The debug injection trigger: F12 (`ESC [ 24 ~`, the common xterm encoding).
-/// Slice 4 replaces this keypress path with a Transcript pushed from the daemon.
+/// (The daemon's pushed Transcript is the real injection path; this is a manual
+/// aid for exercising the channel without the daemon.)
 const DEBUG_KEY: &[u8] = b"\x1b[24~";
-/// The hardcoded string slice 1 injects, to prove the channel end-to-end.
+/// The hardcoded debug string, to prove the injection channel end-to-end.
 const DEBUG_STRING: &str = "create a function that reverses a string";
 
 /// Set by the SIGWINCH handler; the poll loop drains it and re-sizes the child.
@@ -57,7 +58,7 @@ struct Shared {
     /// Latest token for the strip: the daemon's voice state (from `state` frames)
     /// — `idle`, `recording`, `transcribing` — while cleanly registered, or a
     /// [`LinkState`] token (`unreachable`/`rejected`/`dropped`) when the link to
-    /// the daemon is down, so the failure modes stay distinct (task-10.2).
+    /// the daemon is down, so the failure modes stay distinct.
     state: String,
     /// Transcript bytes waiting to be injected into the child PTY (from
     /// `transcript` frames), already stripped of any trailing newline.
@@ -284,7 +285,7 @@ fn exec_child(program: &str, rest: &[String]) {
 /// token — `unreachable` (no daemon), `incompatible` (a too-old/version-mismatched
 /// daemon, e.g. a stale daemon after an upgrade), `rejected` (daemon refused for
 /// another reason), or `dropped` (was registered, then EOF) — never a generic
-/// "offline" (task-10.2/10.3), and the reason is logged for diagnosis. It
+/// "offline", and the reason is logged for diagnosis. It
 /// reconnects on a 2 s cadence, re-registering when the daemon returns.
 ///
 /// Registration carries this client's [`PROTOCOL_VERSION`] (`register-sink <v>`)
