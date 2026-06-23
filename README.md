@@ -40,10 +40,15 @@ makepkg -si                    # builds the Rust workspace + a vendored whisper.
    (`[whisper].vulkan_device`, default `0000:03:00.0`). Find yours with `lspci`. Two RADV
    devices (discrete + iGPU) make this mandatory — see `docs/adr/0001`.
 2. **Model** (~3 GB, not packaged) — fetched **on first run**. When the daemon starts and
-   `[whisper].model_path` is absent, it enters the `downloading` state (visible via
-   `ghostty-voice-ctl status`), streams `ggml-large-v3.bin` from `[whisper].model_url`
-   (HuggingFace by default) into `~/.local/share/ghostty-voice/models/`, and `notify-send`s
-   progress at 10% milestones. While downloading, `toggle`/`vad`/`continuous` are rejected with
+   `[whisper].model_path` is absent, it enters the `downloading` **State** and streams
+   `ggml-large-v3.bin` from `[whisper].model_url` (HuggingFace by default) into
+   `~/.local/share/ghostty-voice/models/`. Progress is reported live from one source of truth:
+   `ghostty-voice-ctl status` shows `downloading <pct>` (e.g. `downloading 42`) and a running
+   `talk-to`'s bottom **status strip** shows `downloading <pct>%` (e.g. `downloading 42%`),
+   advancing on whole-percent changes — a bare `downloading` until the server reports a total
+   size. Download progress is **not** sent via `notify-send`; the start/progress/completion/
+   failure milestones stay in the journald log (`journalctl --user -u ghostty-voiced`). While
+   downloading, `toggle`/`vad`/`continuous` are rejected with
    "model still downloading" — the daemon never hangs. The fetch is SHA-256 verified if you pin
    `[whisper].model_sha256` (copy the hash from the HuggingFace LFS page); leave it empty to
    accept by presence. A failed/corrupt fetch is discarded and retried with backoff.
@@ -194,7 +199,8 @@ systemctl --user restart ghostty-voiced
 ```
 
 **Strip / fallback states.** While registered, `talk-to`'s bottom strip shows the daemon voice
-state (`idle`/`recording`/`transcribing`). Otherwise it shows a distinct link token — `unreachable`
+**State** (`idle`/`recording`/`transcribing`, and on first run `downloading <pct>%` as the model
+fetches). Otherwise it shows a distinct link token — `unreachable`
 (no daemon), `incompatible` (stale/old daemon — restart it, see above), `rejected` (registration
 refused), or `dropped` (a previously-good connection ended). In every non-registered case `talk-to`
 keeps working as a plain passthrough and the daemon delivers via the focused-window sink; the reason
@@ -215,9 +221,11 @@ is logged to `~/.local/state/ghostty-voice/talk-to.log` (`$XDG_STATE_HOME` if se
   `vulkaninfo --summary` (from `vulkan-tools`); the discrete GPU must appear. whisper-server is
   pinned via `GGML_VK_VISIBLE_DEVICES`; a missing Vulkan ICD loader (`vulkan-icd-loader`, a
   package dependency) makes it fall back to CPU.
-- **Stuck in `downloading`** — `ghostty-voice-ctl status` shows `downloading` until the ~3 GB
-  model lands; watch progress notifications, or `journalctl --user -u ghostty-voiced`. A
-  corrupt fetch (SHA mismatch when `model_sha256` is pinned) is discarded and retried.
+- **Stuck in `downloading`** — `ghostty-voice-ctl status` shows `downloading <pct>` (and a
+  `talk-to` strip shows `downloading <pct>%`) until the ~3 GB model lands; watch the strip or
+  `status`, or tail `journalctl --user -u ghostty-voiced` (progress is logged there, not sent as
+  notifications). A corrupt fetch (SHA mismatch when `model_sha256` is pinned) is discarded and
+  retried.
 - **Dropped characters** — raise `[inject].key_delay_ms`.
 - **`talk-to` strip shows a connection problem** (`unreachable` / `incompatible` / `rejected` /
   `dropped`), or dictation goes to the focused window instead of the wrapped agent — see the
