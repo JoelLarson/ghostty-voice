@@ -1,10 +1,10 @@
 ---
 id: TASK-10
 title: 'PRD: talk-to operability — make wrapper-sink delivery legible'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-06-22 23:25'
-updated_date: '2026-06-23 04:10'
+updated_date: '2026-06-23 04:24'
 labels:
   - prd
   - talk-to
@@ -53,9 +53,22 @@ Successful when: `ghostty-voice-ctl status` shows whether a wrapper sink or the 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `ghostty-voice-ctl status` reports the active Delivery sink and the registered wrapper-sink count
-- [ ] #2 `talk-to` distinguishes unreachable / incompatible / dropped connection states and logs the reason
-- [ ] #3 An incompatible (older) daemon is reported explicitly, never as a generic `offline`
-- [ ] #4 README has a verification & troubleshooting section using the CONTEXT.md vocabulary
-- [ ] #5 All work is test-first (Chicago-style) with unit + integration coverage as applicable; cargo test green
+- [x] #1 `ghostty-voice-ctl status` reports the active Delivery sink and the registered wrapper-sink count
+- [x] #2 `talk-to` distinguishes unreachable / incompatible / dropped connection states and logs the reason
+- [x] #3 An incompatible (older) daemon is reported explicitly, never as a generic `offline`
+- [x] #4 README has a verification & troubleshooting section using the CONTEXT.md vocabulary
+- [x] #5 All work is test-first (Chicago-style) with unit + integration coverage as applicable; cargo test green
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+PRD complete — all four issues done, Success Validation holds. Delivery is now observable end to end.
+
+- TASK-10.1 (1044c6e): `ghostty-voice-ctl status` reports the active Delivery sink + wrapper count (`ok <state> sink=<kind> wrappers=<n>`), additive/backward-compatible. protocol `SinkKind`/`StatusReport` (TDD) + daemon wiring + `status_report.rs` integration test.
+- TASK-10.2 (d121fd7): talk-to shows distinct link tokens — `unreachable`/`rejected`/`dropped` — and logs the reason to a file (raw-mode TUI can't use stderr). core `link.rs` (TDD).
+- TASK-10.3 (4a4df88): `register-sink` version handshake → an old/stale daemon is reported as `incompatible`, distinct from `unreachable`. protocol `PROTOCOL_VERSION`/`version_compatible`/`Command::RegisterSink(Option<u32>)` (TDD) + `LinkState::Incompatible` + daemon refusal + `incompatible_daemon.rs` integration test.
+- TASK-10.4 (bb552dd): dedicated README talk-to section (verify delivery via status + journal lines; trigger-time binding & Held-for-replay; multi-instance newest-live handoff; upgrade→restart; CONTEXT.md vocabulary).
+
+Success Validation: status shows wrapper vs focused-window (+ count) without journald; talk-to shows different tokens for unreachable/incompatible/dropped/rejected and logs why; an older daemon yields an explicit `incompatible`, not `offline`; the README lets a user verify wrapper delivery and explain a fallback unaided; all new unit + integration tests pass, written test-first. Out-of-scope (JSON framing, transcript-history, explicit `sink <target>`) untouched. AC #1–#5 met. `cargo test --workspace` (275), clippy, fmt green.
+<!-- SECTION:FINAL_SUMMARY:END -->
