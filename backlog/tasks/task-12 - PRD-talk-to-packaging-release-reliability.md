@@ -1,9 +1,10 @@
 ---
 id: TASK-12
 title: 'PRD: talk-to packaging & release reliability'
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-06-22 23:25'
+updated_date: '2026-06-23 04:26'
 labels:
   - prd
   - packaging
