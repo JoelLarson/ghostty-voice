@@ -69,6 +69,20 @@ package() {
   install -Dm644 config.toml.example \
     "$pkgdir/usr/share/ghostty-voice/config.toml.example"
   install -Dm644 README.md "$pkgdir/usr/share/doc/ghostty-voice/README.md"
+
+  # Binary-completeness guard (TASK-12.2): a complete package must install ALL
+  # FOUR binaries. The 0.1.8 release nearly shipped without `talk-to` (missing
+  # from this function). Fail the build loudly if any is absent, so a missing
+  # binary can never ship silently. (packaging/check-package-binaries.sh runs the
+  # exact same check standalone — e.g. for a dry-run release; keep the lists in sync.)
+  local _bin _missing=()
+  for _bin in ghostty-voice ghostty-voiced ghostty-voice-ctl talk-to; do
+    [ -x "$pkgdir/usr/bin/$_bin" ] || _missing+=("$_bin")
+  done
+  if (( ${#_missing[@]} )); then
+    error "package() is missing required binaries: ${_missing[*]}"
+    return 1
+  fi
 }
 
 # The ~3 GB model is NOT packaged. It is fetched on first run by the daemon
