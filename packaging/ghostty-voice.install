@@ -33,5 +33,36 @@ EOF
 }
 
 post_upgrade() {
-  post_install
+  cat <<'EOF'
+==> ghostty-voice upgraded.
+
+    IMPORTANT — restart the daemon to pick up the new binary:
+
+         systemctl --user restart ghostty-voiced
+
+    A running ghostty-voiced keeps the OLD binary in memory until it is
+    restarted. A stale daemon speaks an older control protocol, so `talk-to`
+    shows `incompatible` and dictation silently falls back to the focused-window
+    (ydotool) path instead of the wrapped agent. Run the command above as the
+    user whose daemon is running (not root).
+EOF
+
+  # Best-effort: restart any ALREADY-RUNNING per-user instances so the new binary
+  # takes effect without manual action. Package scriptlets run as root and cannot
+  # trivially reach a per-user systemd service, so this is strictly best-effort
+  # and must never (a) fail the package transaction or (b) START a daemon that
+  # isn't already running. We use:
+  #   - `try-restart`, which acts ONLY on an already-active unit (no-op otherwise,
+  #     so a disabled/stopped daemon is never started),
+  #   - `--machine=<user>@.host` to reach each logged-in user's systemd manager,
+  #   - and swallow all output/errors (|| true) so the transaction always succeeds.
+  if command -v systemctl >/dev/null 2>&1 && command -v loginctl >/dev/null 2>&1; then
+    local _gv_user
+    while read -r _gv_user; do
+      [ -n "$_gv_user" ] || continue
+      systemctl --machine="${_gv_user}@.host" --user try-restart ghostty-voiced.service \
+        >/dev/null 2>&1 || true
+    done < <(loginctl list-users --no-legend 2>/dev/null | awk '{print $2}')
+  fi
+  return 0
 }
