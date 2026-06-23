@@ -71,11 +71,14 @@ moment; the daemon always delivers to the active sink. Two kinds:
   Delivery is to a known pipe, so there is no "wrong-window" risk.
 
 Switching is sequential, never concurrent — launching a wrapper makes it the active sink;
-it can be switched back to the focused-window sink explicitly; only ever **one active at a
-time**. An utterance's target sink is **bound when the utterance is triggered**, not when
-its transcript is ready. If the bound sink is gone at delivery, the transcript is
-**Held-for-replay** and you are asked where to send it — it is **never** silently
-redirected to whatever sink is active now.
+only ever **one active at a time**. With **several wrappers** registered, closing the
+active one hands off to the **most-recently-registered still-live** wrapper sink (the
+*newest-live handoff*); the focused-window sink reactivates only when the **last** wrapper
+exits — never while another wrapper is still live. An utterance's target sink is **bound
+when the utterance is triggered**, not when its transcript is ready. If the bound sink is
+gone at delivery, the transcript is **Held-for-replay** and you are asked where to send it
+— it is **never** silently redirected to whatever sink is active now (so an utterance bound
+to a now-dead wrapper is still held even when a handoff kept another wrapper active).
 
 **Auto-type**:
 Delivering a **Transcript** to the **active Delivery sink**, **without** pressing Enter
