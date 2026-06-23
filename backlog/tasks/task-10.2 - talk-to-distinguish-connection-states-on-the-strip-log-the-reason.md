@@ -1,9 +1,10 @@
 ---
 id: TASK-10.2
 title: 'talk-to: distinguish connection states on the strip + log the reason'
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-06-22 23:26'
+updated_date: '2026-06-23 04:13'
 labels:
   - talk-to
 dependencies: []
@@ -31,3 +32,14 @@ Strip presentation stays visually verified per task-9; any pure condition→toke
 - [ ] #3 Any pure condition→token mapping is covered by test-first unit tests; cargo test green
 - [ ] #4 The token meanings are documented (here or folded into the troubleshooting docs issue)
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+Chicago-style TDD on a new pure module; talk-to wiring is OS glue (not unit-tested), strip presentation stays visually verified.
+
+1. core: new `link.rs` with `LinkState {Unreachable, Rejected, Dropped}` (`.token()` → "unreachable"/"rejected"/"dropped") and `classify_first_line(&str) -> Registration {Registered, Rejected}` (a parseable Frame ⇒ Registered; an `err`/garbage first reply ⇒ Rejected — an old daemon that doesn't know register-sink replies `err unknown command`). Unit tests, no doubles. (Incompatible + version is the sibling issue 10.3.)
+2. talk-to spawn_sink_client: connect-fail → Unreachable; after register-sink, classify the first line → Registered (process frames; set strip token from Frame::State) or Rejected; EOF after being registered → Dropped. Log the detailed reason (connect error / rejection) to a best-effort log file (writing to stderr would corrupt the raw-mode TUI). Strip token comes from LinkState when not cleanly connected.
+3. Document token meanings (brief here; fuller in 10.4).
+4. cargo test/clippy/fmt green.
+<!-- SECTION:PLAN:END -->
