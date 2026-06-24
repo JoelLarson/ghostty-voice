@@ -3,10 +3,10 @@ id: TASK-14.1
 title: >-
   remove the focused-window/ydotool sink — the wrapper sink is the only Delivery
   sink
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-06-24 00:45'
-updated_date: '2026-06-24 00:53'
+updated_date: '2026-06-24 01:07'
 labels:
   - needs-triage
 dependencies: []
@@ -43,13 +43,13 @@ Part of TASK-14 (talk-to as the sole interface). Removes the **focused-window De
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 ydotool injection removed: io/inject.rs, [inject] config, and the daemon ydotoold health check are deleted; the workspace no longer references ydotool
-- [ ] #2 Sink model is wrapper-only: FocusedWindow removed from ActiveSink/Route/SinkKind; with no wrapper registered there is no active sink (deliveries hold)
-- [ ] #3 The Freshness window is removed; a wrapper delivery either pushes to the live PTY or is Held-for-replay because the bound wrapper is gone — no time-based staleness gate
-- [ ] #4 replay-last re-routes the latest cached transcript to the active wrapper sink, and errors clearly when none is registered
-- [ ] #5 Packaging/doctor/config.example no longer mention ydotool/ydotoold; the walking-skeleton ydotool path is retired
-- [ ] #6 CONTEXT.md updated to the wrapper-only sink model (sink / freshness / held-for-replay / auto-type entries); an ADR records the TASK-14 architecture shift
-- [ ] #7 sink.rs unit tests and daemon integration tests updated for wrapper-only delivery; full cargo test, clippy --all-targets, fmt --check are green
+- [x] #1 ydotool injection removed: io/inject.rs, [inject] config, and the daemon ydotoold health check are deleted; the workspace no longer references ydotool
+- [x] #2 Sink model is wrapper-only: FocusedWindow removed from ActiveSink/Route/SinkKind; with no wrapper registered there is no active sink (deliveries hold)
+- [x] #3 The Freshness window is removed; a wrapper delivery either pushes to the live PTY or is Held-for-replay because the bound wrapper is gone — no time-based staleness gate
+- [x] #4 replay-last re-routes the latest cached transcript to the active wrapper sink, and errors clearly when none is registered
+- [x] #5 Packaging/doctor/config.example no longer mention ydotool/ydotoold; the walking-skeleton ydotool path is retired
+- [x] #6 CONTEXT.md updated to the wrapper-only sink model (sink / freshness / held-for-replay / auto-type entries); an ADR records the TASK-14 architecture shift
+- [x] #7 sink.rs unit tests and daemon integration tests updated for wrapper-only delivery; full cargo test, clippy --all-targets, fmt --check are green
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -90,3 +90,27 @@ DOCS: CONTEXT.md (Delivery sink/Freshness window/Held-for-replay/Auto-type/Repla
 
 VERIFY: cargo test (workspace) + clippy --all-targets + fmt --check green.
 <!-- SECTION:PLAN:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Collapsed delivery to a wrapper-sink-only model and removed the focused-window/ydotool path.
+
+CORE: `sink.rs` rewritten — `SinkRegistry.active()` returns `Option<SinkId>`, `Route` is `{Wrapper, Held}` (no `FocusedWindow`); fresh registry / last-wrapper-exit yields no active sink; newest-live handoff and dead/none-bound→Held preserved (13 tests). `delivery.rs` and `inject.rs` deleted; `queue.rs` stripped of the freshness window (no `record_end`/`head_delivery`; `enqueue()` + `next_to_type()`). `protocol.rs`: dropped `SinkKind` and `StatusReport.active_sink` → wire `ok <state> wrappers=<n>` (backward-compatible parse). `config.rs`: removed `InjectConfig`/`[inject]`; `retry_window_seconds` kept for transcription-retry only (doc updated). `doctor.rs`: dropped the ydotoold-socket probe/check.
+
+IO: `inject.rs` deleted; lib doc updated.
+
+DAEMON: removed `health_check_ydotoold`, `clock_base`/`now_offset`; `bindings: HashMap<u64, Option<SinkId>>`; `drain_queue` routes Wrapper/Held only (no freshness/ydotool); `replay_last` pushes the latest cached transcript to the active wrapper sink (errs when none); `status_report` is `{state, wrapper_count}`.
+
+BINARIES/PACKAGING: walking-skeleton `ghostty-voice` prints the transcript (ydotool typing retired); ctl `doctor` drops the ydotool probe; PKGBUILD drops the `ydotool` dep + updates pkgdesc/comment; `config.toml.example` drops `[inject]` and rewrites the `[cache]` retry-window doc.
+
+TESTS: `sink.rs`, `queue.rs`, `protocol.rs`, `doctor.rs`, `session.rs`, and the six daemon integration tests rewritten to the wrapper-only API ("no wrapper → Held" replaces "no wrapper → focused-window").
+
+DOCS: CONTEXT.md sink/auto-type/held/replay-last entries rewritten and the Freshness-window entry removed; `docs/adr/0003-talk-to-is-the-sole-interface-...md` records the architecture shift.
+
+README is rewritten in TASK-14.2 (status output + usage sections reshape together with the trigger change).
+
+VERIFY: full `cargo test` green (223 core unit tests + all integration suites), `cargo clippy --all-targets` clean, `cargo fmt --check` clean. Not committed (left to the user).
+
+Note: "ydotool"/"why do tool" remain as correction-dictionary/vocab *examples* (an arbitrary misheard-jargon word), not a dependency.
+<!-- SECTION:FINAL_SUMMARY:END -->
