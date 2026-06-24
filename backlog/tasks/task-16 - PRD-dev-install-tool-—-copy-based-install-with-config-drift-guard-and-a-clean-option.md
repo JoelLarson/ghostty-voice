@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-06-24 02:41'
+updated_date: '2026-06-24 02:42'
 labels:
   - needs-triage
 dependencies: []
@@ -55,3 +56,42 @@ A `packaging/dev-install.sh` (replacing the symlink `dev-setup.sh`), wrapped by 
 
 Refs: TASK-15 (superseded dev-setup; strict config + -git PKGBUILD retained), packaging/RELEASE.md, packaging/dev-setup.sh, packaging/PKGBUILD.
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+Sequence the three subtasks in order, ONE ATOMIC COMMIT EACH (16.1 → 16.2 → 16.3). 16.2 and 16.3 depend on 16.1 (the script must exist). Implementation is driven by the goal prompt below.
+
+=== GOAL PROMPT (paste to a fresh agent session to finish TASK-16) ===
+
+Implement TASK-16 (the dev-install tool) in the ghostty-voice repo. The design is fully decided — do not re-litigate it. Work through the three subtasks in order, ONE ATOMIC COMMIT PER SUBTASK, verifying before each commit.
+
+Context:
+- Repo: /home/chillwat/Development/JoelLarson/ghostty-voice (Rust workspace + Arch packaging). Branch: main; atomic commits straight to main are fine.
+- Read the Backlog tasks for full detail via the backlog MCP (task_view): TASK-16 (PRD) and subtasks TASK-16.1, TASK-16.2, TASK-16.3.
+- This SUPERSEDES the symlink/override dev tooling from TASK-15. The strict-config change and the ghostty-voice-git PKGBUILD from TASK-15 must remain untouched.
+
+Confirmed design (decisions A & B — do not change):
+- A: binaries are COPIED to /usr/bin via `sudo install -Dm755` (NOT ~/.local/bin), and there is NO systemd ExecStart override — the packaged unit (ExecStart=/usr/bin/ghostty-voiced) runs the dev build so `systemctl --user restart ghostty-voiced` works.
+- B: the drift-guard compares the repo's static package files (config.toml.example, dist/ghostty-voiced.service) against their installed counterparts (/usr/share/ghostty-voice/config.toml.example, /usr/lib/systemd/user/ghostty-voiced.service). The user's personal ~/.config/ghostty-voice/config.toml is NEVER read or overwritten by the tool (only removed by --clean).
+
+Deliverable: packaging/dev-install.sh (replacing packaging/dev-setup.sh), wired via the Makefile, plus doc updates.
+
+Order & commits:
+1) TASK-16.1 — copy install spine: `cargo build --release` → copy the 4 binaries over /usr/bin (sudo install -Dm755) → `systemctl --user restart ghostty-voiced`. Remove the symlink/override logic and migrate an old-style machine (delete the override.conf this repo wrote at ~/.config/systemd/user/ghostty-voiced.service.d/override.conf, then `systemctl --user daemon-reload`). Update the Makefile (`make dev`) and RELEASE.md/README "Local development". Commit.
+2) TASK-16.2 — config drift-guard gating the binary copy: compare repo-vs-installed (cmp -s; show `diff` on mismatch), prompt `overwrite installed configs? [y/N]`; decline OR no-TTY → abort BEFORE copying binaries and before the restart; accept → sudo-overwrite the file(s) + `systemctl --user daemon-reload`, then continue to the copy. Absent installed counterpart → install it and continue. Commit.
+3) TASK-16.3 — `--clean`: delete ~/.config/ghostty-voice, ~/.local/share/ghostty-voice (incl. the ~3 GB model), ~/.cache/ghostty-voice, ~/.local/state/ghostty-voice (honor XDG_CONFIG_HOME/XDG_DATA_HOME/XDG_CACHE_HOME/XDG_STATE_HOME) behind ONE confirmation listing the paths (+ `du -sh` sizes if cheap); `--clean -y`/`--force` skips the prompt; performs no build/install; add a `make clean-xdg` wrapper. Commit.
+
+Constraints:
+- bash, `set -euo pipefail`, idempotent. Each script passes `bash -n` and, if shellcheck is installed, `shellcheck`.
+- A failed `cargo build` aborts before any copy (no partial install).
+- Shell-only work: it should not touch the Rust gate, but run `cargo build` to confirm; if you touch any Rust, run `cargo test` + `cargo clippy --all-targets` + `cargo fmt --check`.
+- For each subtask: set it In Progress, implement, check its acceptance criteria, set Done with a final summary (backlog MCP). Update the parent plan if the approach shifts.
+- DO NOT run dev-install.sh against this machine — it sudo-overwrites /usr/bin and restarts the daemon. Verify by `bash -n`, shellcheck, `make -n`, and reading. The maintainer runs it.
+- End every commit message with:
+  Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+Done when: dev-install.sh implements copy-install + drift-guard + --clean per the three subtasks; Makefile + docs updated; the symlink/override approach is removed; all three subtasks are Done in Backlog; three atomic commits on main; bash -n/shellcheck clean; the Rust gate still green.
+
+=== END GOAL PROMPT ===
+<!-- SECTION:PLAN:END -->
