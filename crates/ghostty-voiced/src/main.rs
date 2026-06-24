@@ -14,24 +14,20 @@
 mod vulkan_enum;
 
 use std::collections::HashMap;
-use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::process::Child as RecorderChild;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use ghostty_voice_core::config::{Config, expand_tilde};
-use ghostty_voice_core::delivery::Delivery;
-use ghostty_voice_core::gesture::ButtonEvent;
 use ghostty_voice_core::machine::{self, Action};
 use ghostty_voice_core::protocol::{
-    Command, Frame, PROTOCOL_VERSION, ProtocolError, Response, SinkKind, State, StatusReport,
+    Command, Frame, PROTOCOL_VERSION, ProtocolError, Response, State, StatusReport,
     version_compatible,
 };
 use ghostty_voice_core::queue::DeliveryQueue;
-use ghostty_voice_core::sink::{ActiveSink, Route, SinkId, SinkRegistry};
+use ghostty_voice_core::sink::{Route, SinkId, SinkRegistry};
 use ghostty_voice_core::supervisor::Backoff;
 use ghostty_voice_core::transcript::parse_transcript;
 use ghostty_voice_core::vulkan::resolve_device_index;
@@ -53,8 +49,6 @@ struct Daemon {
     whisper: Option<tokio::process::Child>,
     /// Ordered delivery queue — utterances drain in strict record-order.
     queue: DeliveryQueue,
-    /// Monotonic base for per-utterance freshness offsets.
-    clock_base: Instant,
     /// XDG cache root: holds `recordings/` and `transcripts/`.
     cache_root: PathBuf,
     /// Held true while a drain is in flight so typing never interleaves.
@@ -66,9 +60,9 @@ struct Daemon {
     /// Monotonically incremented each time a continuous session starts, so a
     /// session's driver task can tell it has been superseded/cancelled and stop.
     continuous_gen: u64,
-    /// The active **Delivery sink** tracker (IDEAS.md #4): exactly one sink is
-    /// active; a registered `talk-to` **wrapper sink** preempts the default
-    /// **focused-window sink** for its lifetime.
+    /// The active **Delivery sink** tracker (IDEAS.md #4): at most one
+    /// `talk-to` **wrapper sink** is active at a time; with none registered there
+    /// is no active sink and deliveries are held for replay.
     sinks: SinkRegistry,
     /// Push channels to each registered wrapper sink's persistent connection,
     /// keyed by sink id. The drain writes a pre-encoded [`Frame`] line here to
@@ -78,7 +72,8 @@ struct Daemon {
     /// Bound at *trigger time* (when recording starts/stops), never at delivery
     /// time — so switching sinks mid-utterance can't misroute it, and a bound
     /// wrapper that dies before delivery is Held-for-replay, not redirected.
-    bindings: HashMap<u64, ActiveSink>,
+    /// `None` means no wrapper was active at trigger time (nowhere to deliver).
+    bindings: HashMap<u64, Option<SinkId>>,
     /// Broadcasts daemon [`State`] changes to every registered wrapper sink so
     /// each one's status strip stays live. Updated via [`Daemon::set_state`].
     state_tx: watch::Sender<State>,
@@ -100,9 +95,6 @@ struct ContinuousSession {
 }
 
 impl Daemon {
-    fn now_offset(&self) -> Duration {
-        self.clock_base.elapsed()
-    }
     /// Set the observable state and broadcast it to every registered wrapper
     /// sink (so each `talk-to` status strip tracks the daemon live). The single
     /// chokepoint for state changes — call this instead of writing `state`.
@@ -134,7 +126,6 @@ async fn main() -> Result<()> {
 
     let cfg_path = config_path()?;
     let config = load_config(&cfg_path);
-    health_check_ydotoold();
 
     let socket = socket_path()?;
     let _ = std::fs::remove_file(&socket);
@@ -150,7 +141,6 @@ async fn main() -> Result<()> {
         recorder: None,
         whisper: None,
         queue: DeliveryQueue::new(),
-        clock_base: Instant::now(),
         cache_root: cache_root()?,
         draining: false,
         continuous: None,
@@ -164,11 +154,9 @@ async fn main() -> Result<()> {
 
     let supervisor = tokio::spawn(supervise(daemon.clone()));
 
-    // Tactile triggers: read the one configured evdev device directly and
-    // drive recording via the gesture mapper. `input_shutdown` lets the reader
-    // thread stop reconnecting once we begin teardown.
-    let input_shutdown = Arc::new(AtomicBool::new(false));
-    spawn_input_listener(daemon.clone(), input_shutdown.clone());
+    // Triggers are not read here: `talk-to` recognizes the Shift+F9/F10 escape
+    // sequences in its own PTY proxy and sends `vad`/`toggle` over this control
+    // socket. The daemon owns no input device.
 
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
@@ -192,7 +180,6 @@ async fn main() -> Result<()> {
     }
 
     info!("shutting down — freeing VRAM");
-    input_shutdown.store(true, Ordering::Relaxed);
     supervisor.abort();
     teardown(&daemon).await;
     let _ = std::fs::remove_file(&socket);
@@ -504,18 +491,12 @@ async fn handle_conn(stream: UnixStream, daemon: Arc<Mutex<Daemon>>) -> Result<(
     Ok(())
 }
 
-/// Snapshot the daemon state and the active **Delivery sink** into a
-/// [`StatusReport`]: which sink kind is active (focused-window vs
-/// wrapper) and how many wrapper sinks are registered.
+/// Snapshot the daemon state and how many **wrapper sinks** are registered into a
+/// [`StatusReport`] — `wrappers=0` means there is nowhere to deliver.
 async fn status_report(daemon: &Arc<Mutex<Daemon>>) -> StatusReport {
     let d = daemon.lock().await;
-    let active_sink = match d.sinks.active() {
-        ActiveSink::Wrapper(_) => SinkKind::Wrapper,
-        ActiveSink::FocusedWindow => SinkKind::FocusedWindow,
-    };
     StatusReport {
         state: d.state,
-        active_sink,
         wrapper_count: d.sinks.wrapper_count(),
     }
 }
@@ -524,7 +505,8 @@ async fn status_report(daemon: &Arc<Mutex<Daemon>>) -> StatusReport {
 /// connection. Registration makes this the active Delivery sink; the daemon then
 /// pushes [`Frame`]s — `state` changes (from the watch channel) for the status
 /// strip and `transcript` deliveries (from this sink's mpsc) — until the
-/// client disconnects, at which point the focused-window sink reactivates.
+/// client disconnects, at which point the newest still-live wrapper (if any)
+/// takes over, or there is no active sink.
 async fn serve_sink(
     mut reader: BufReader<OwnedReadHalf>,
     mut write_half: OwnedWriteHalf,
@@ -587,13 +569,13 @@ async fn serve_sink(
         }
     }
 
-    // Deregister: the focused-window sink reactivates (the default floor).
+    // Deregister: hand off to the newest still-live wrapper, or no active sink.
     {
         let mut d = daemon.lock().await;
         d.sinks.deregister(id);
         d.sink_conns.remove(&id);
     }
-    info!("wrapper sink {id:?} deregistered — focused-window sink reactivated");
+    info!("wrapper sink {id:?} deregistered");
     Ok(())
 }
 
@@ -619,110 +601,6 @@ async fn apply_command(command: Command, daemon: &Arc<Mutex<Daemon>>) -> Respons
             transition.response
         }
         Err(e) => Response::Err(e.to_string()),
-    }
-}
-
-// ---- tactile input (evdev) -------------------------------------------------
-
-/// Wire up the evdev trigger path: a blocking reader thread owns the device
-/// and the pure key-tracker, forwarding `ButtonEvent`s over a channel to an async
-/// handler that maps them (against current state) into daemon commands.
-fn spawn_input_listener(daemon: Arc<Mutex<Daemon>>, shutdown: Arc<AtomicBool>) {
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ButtonEvent>();
-
-    // Reader thread: blocking evdev reads can't run on the tokio runtime.
-    let reader_daemon = daemon.clone();
-    std::thread::Builder::new()
-        .name("evdev-input".to_owned())
-        .spawn(move || input_reader_loop(reader_daemon, tx, shutdown))
-        .expect("spawning the evdev input thread");
-
-    // Handler: resolve each gesture against current state and apply it.
-    tokio::spawn(async move {
-        while let Some(event) = rx.recv().await {
-            handle_button(&daemon, event).await;
-        }
-    });
-}
-
-/// Blocking device-read loop. Reads the configured combos/selector fresh on each
-/// (re)connect — so a `reload` or a replug picks up new bindings — builds a pure
-/// `KeyTracker`, and forwards every resolved `ButtonEvent`. On device error or
-/// disappearance it backs off and reconnects (unplug/replug recovery), until the
-/// shutdown flag is set.
-fn input_reader_loop(
-    daemon: Arc<Mutex<Daemon>>,
-    tx: tokio::sync::mpsc::UnboundedSender<ButtonEvent>,
-    shutdown: Arc<AtomicBool>,
-) {
-    use ghostty_voice_core::input::KeyTracker;
-    use ghostty_voice_core::key_combo::KeyCombo;
-
-    while !shutdown.load(Ordering::Relaxed) {
-        // Snapshot just the input config (a brief blocking lock from this thread).
-        let input_cfg = daemon.blocking_lock().config.input.clone();
-
-        let combos = KeyCombo::parse(&input_cfg.start_combo)
-            .and_then(|start| KeyCombo::parse(&input_cfg.stop_combo).map(|stop| (start, stop)));
-        let (start, stop) = match combos {
-            Ok(pair) => pair,
-            Err(e) => {
-                error!("input: invalid combo in config ({e}) — triggers disabled until fixed");
-                std::thread::sleep(Duration::from_secs(5));
-                continue;
-            }
-        };
-
-        match ghostty_voice_io::input::open_device(&input_cfg.device) {
-            Ok((path, mut device)) => {
-                info!(
-                    "input: reading {} [{}] — start={} stop={}",
-                    ghostty_voice_io::input::device_name(&device),
-                    path.display(),
-                    input_cfg.start_combo,
-                    input_cfg.stop_combo,
-                );
-                let mut tracker = KeyTracker::new(start, stop);
-                let result = ghostty_voice_io::input::read_keys(&mut device, |raw| {
-                    if shutdown.load(Ordering::Relaxed) {
-                        return ControlFlow::Break(());
-                    }
-                    if let Some(event) = tracker.feed(raw) {
-                        // A closed channel means the handler is gone (shutdown).
-                        if tx.send(event).is_err() {
-                            return ControlFlow::Break(());
-                        }
-                    }
-                    ControlFlow::Continue(())
-                });
-                if let Err(e) = result {
-                    warn!("input: device read ended ({e}) — reconnecting");
-                }
-            }
-            Err(e) => warn!("input: cannot open device ({e}) — retrying"),
-        }
-
-        if shutdown.load(Ordering::Relaxed) {
-            return;
-        }
-        std::thread::sleep(Duration::from_secs(2));
-    }
-}
-
-/// Map one tactile `ButtonEvent` to a command (against current state and the
-/// configured hold threshold) and apply it. A gesture that resolves to no
-/// command (e.g. a Start tap that latches) is silently ignored.
-async fn handle_button(daemon: &Arc<Mutex<Daemon>>, event: ButtonEvent) {
-    let (state, threshold) = {
-        let d = daemon.lock().await;
-        (d.state, d.config.input.hold_threshold())
-    };
-    if let Some(command) = ghostty_voice_core::gesture::command_for(state, event, threshold) {
-        let response = apply_command(command, daemon).await;
-        info!(
-            "input gesture {event:?} -> {command:?}: {}",
-            response.encode()
-        );
     }
 }
 
@@ -1053,8 +931,7 @@ async fn end_continuous(
     // same cache-before-type ⇒ auto-type path as batch utterances.
     let seq = {
         let mut d = daemon.lock().await;
-        let now = d.now_offset();
-        let seq = d.queue.enqueue_at(now);
+        let seq = d.queue.enqueue();
         let bound = d.sinks.active();
         d.bindings.insert(seq, bound);
         d.queue.set_ready(seq, trimmed.to_owned());
@@ -1081,8 +958,7 @@ async fn stop_and_enqueue(d: &mut Daemon, daemon: &Arc<Mutex<Daemon>>) {
         warn!("could not cache recording: {e}");
     }
 
-    let record_end = d.now_offset();
-    let seq = d.queue.enqueue_at(record_end);
+    let seq = d.queue.enqueue();
     // Bind the target sink NOW (trigger time), not when the transcript is ready.
     let bound = d.sinks.active();
     d.bindings.insert(seq, bound);
@@ -1189,8 +1065,9 @@ async fn transcribe_with_retry(
 }
 
 /// Drain the delivery queue head-first, serialized so utterances never
-/// interleave: cache each transcript to disk *before* typing, then auto-type if
-/// fresh or hold-for-replay if stale. Only one drain runs at a time.
+/// interleave: cache each transcript to disk *before* delivery, then push it to
+/// the bound **wrapper sink** or hold it for `replay-last` if that wrapper is
+/// gone. Only one drain runs at a time.
 async fn drain_queue(daemon: &Arc<Mutex<Daemon>>) {
     {
         let mut d = daemon.lock().await;
@@ -1203,39 +1080,29 @@ async fn drain_queue(daemon: &Arc<Mutex<Daemon>>) {
     loop {
         // Decide the next action while holding the lock, then release it to do IO.
         // Route by the utterance's *bound* sink (trigger-time), not whatever is
-        // active now; the focused-window sink still honors the Freshness window,
-        // the wrapper sink does not (its PTY target is exact).
+        // active now — so a bound wrapper that has since died Holds rather than
+        // being redirected to a wrapper that happens to be active now.
         let next = {
             let d = daemon.lock().await;
-            let now = d.now_offset();
-            let window = Duration::from_secs(d.config.cache.retry_window_seconds);
-            d.queue
-                .head_delivery(now, window)
-                .map(|(seq, transcript, freshness)| {
-                    let bound = d
-                        .bindings
-                        .get(&seq)
-                        .copied()
-                        .unwrap_or(ActiveSink::FocusedWindow);
-                    let route = d.sinks.route(bound);
-                    let sender = match route {
-                        Route::Wrapper(id) => d.sink_conns.get(&id).cloned(),
-                        _ => None,
-                    };
-                    (
-                        seq,
-                        transcript.to_owned(),
-                        freshness,
-                        route,
-                        sender,
-                        d.transcripts_dir(),
-                        d.config.cache.transcript_keep,
-                        d.config.inject.key_delay_ms,
-                    )
-                })
+            d.queue.next_to_type().map(|(seq, transcript)| {
+                let bound = d.bindings.get(&seq).copied().unwrap_or(None);
+                let route = d.sinks.route(bound);
+                let sender = match route {
+                    Route::Wrapper(id) => d.sink_conns.get(&id).cloned(),
+                    Route::Held => None,
+                };
+                (
+                    seq,
+                    transcript.to_owned(),
+                    route,
+                    sender,
+                    d.transcripts_dir(),
+                    d.config.cache.transcript_keep,
+                )
+            })
         };
 
-        let Some((seq, transcript, freshness, route, sender, tdir, tkeep, key_delay)) = next else {
+        let Some((seq, transcript, route, sender, tdir, tkeep)) = next else {
             break; // head is pending or queue is empty
         };
 
@@ -1246,34 +1113,8 @@ async fn drain_queue(daemon: &Arc<Mutex<Daemon>>) {
         }
 
         match route {
-            // Focused-window sink: today's `ydotool` Auto-type, gated by the
-            // Freshness window (unchanged when no wrapper is registered).
-            Route::FocusedWindow => match freshness {
-                Delivery::AutoType => {
-                    let text = transcript.clone();
-                    let typed = tokio::task::spawn_blocking(move || {
-                        ghostty_voice_io::inject::type_text(&text, key_delay)
-                    })
-                    .await;
-                    match typed {
-                        Ok(Ok(())) => info!("utterance {seq}: auto-typed (focused-window sink)"),
-                        Ok(Err(e)) => {
-                            error!("utterance {seq}: type failed: {e}");
-                            notify(
-                                "ghostty-voice: type failed — run `replay-last` after refocusing",
-                            );
-                        }
-                        Err(join) => error!("utterance {seq}: type task panicked: {join}"),
-                    }
-                }
-                Delivery::HoldForReplay => {
-                    info!("utterance {seq}: held for replay (focused-window sink stale)");
-                    notify("ghostty-voice: transcript held — run `replay-last` after refocusing");
-                }
-            },
             // Wrapper sink: push the Transcript frame down the registered
             // connection; `talk-to` writes it into the agent's PTY (no Enter).
-            // No Freshness window — the PTY target is exact.
             Route::Wrapper(id) => {
                 let pushed = sender.is_some_and(|tx| {
                     tx.send(format!(
@@ -1290,11 +1131,11 @@ async fn drain_queue(daemon: &Arc<Mutex<Daemon>>) {
                     notify("ghostty-voice: wrapper exited before delivery — run `replay-last`");
                 }
             }
-            // The bound wrapper sink died before delivery: Held-for-replay, never
-            // silently redirected to whatever window is focused now.
+            // The bound wrapper sink died (or none was registered) before
+            // delivery: Held-for-replay, recoverable via `replay-last`.
             Route::Held => {
-                info!("utterance {seq}: bound wrapper sink gone — held for replay");
-                notify("ghostty-voice: wrapper exited before delivery — run `replay-last`");
+                info!("utterance {seq}: no live bound wrapper sink — held for replay");
+                notify("ghostty-voice: transcript held (no talk-to) — run `replay-last`");
             }
         }
 
@@ -1306,15 +1147,22 @@ async fn drain_queue(daemon: &Arc<Mutex<Daemon>>) {
     daemon.lock().await.draining = false;
 }
 
-/// Re-inject the most-recent cached transcript (recovery-only).
+/// Re-deliver the most-recent cached transcript into the active **wrapper sink**
+/// (recovery-only). Errors when no `talk-to` is registered — there is nowhere to
+/// deliver, and it is never redirected to a focused window.
 async fn replay_last(d: &Daemon) -> Result<()> {
     let dir = d.transcripts_dir();
-    let key_delay = d.config.inject.key_delay_ms;
     let Some(text) = ghostty_voice_io::cache::latest_transcript(&dir)? else {
         anyhow::bail!("no transcript cached to replay");
     };
-    tokio::task::spawn_blocking(move || ghostty_voice_io::inject::type_text(&text, key_delay))
-        .await??;
+    let Some(id) = d.sinks.active() else {
+        anyhow::bail!("no talk-to wrapper registered to replay into — launch talk-to first");
+    };
+    let Some(tx) = d.sink_conns.get(&id) else {
+        anyhow::bail!("the active wrapper sink has no live connection");
+    };
+    tx.send(format!("{}\n", Frame::Transcript(text).encode()))
+        .map_err(|_| anyhow::anyhow!("the active wrapper sink connection is closed"))?;
     Ok(())
 }
 
@@ -1429,18 +1277,6 @@ fn cache_root() -> Result<PathBuf> {
     }
     let home = std::env::var("HOME").context("neither XDG_CACHE_HOME nor HOME is set")?;
     Ok(PathBuf::from(home).join(".cache/ghostty-voice"))
-}
-
-fn health_check_ydotoold() {
-    let socket = std::env::var("YDOTOOL_SOCKET").unwrap_or_else(|_| {
-        std::env::var("XDG_RUNTIME_DIR")
-            .map(|dir| format!("{dir}/.ydotool_socket"))
-            .unwrap_or_else(|_| "/tmp/.ydotool_socket".to_owned())
-    });
-    if !std::path::Path::new(&socket).exists() {
-        warn!("ydotoold socket not found at {socket} — injection will fail until it runs");
-        notify("ghostty-voice: ydotoold not reachable — injection will fail");
-    }
 }
 
 fn notify(message: &str) {

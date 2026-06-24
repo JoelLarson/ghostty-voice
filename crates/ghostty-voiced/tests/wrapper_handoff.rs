@@ -1,16 +1,14 @@
 //! Integration test: the **newest-live handoff**. With two `talk-to`
 //! **wrapper sinks** registered, closing the *active* one hands the active
-//! **Delivery sink** off to the still-live wrapper — never down to the
-//! **focused-window sink** while a wrapper remains — and a transcript bound
-//! afterward is pushed to that survivor. The focused-window sink reactivates only
-//! when the **last** wrapper exits.
+//! **Delivery sink** off to the still-live wrapper — never down to *no sink*
+//! while a wrapper remains — and a transcript bound afterward is pushed to that
+//! survivor. There is no active sink only when the **last** wrapper exits.
 //!
 //! Like `sink_registration.rs` / `held_for_replay.rs`, this exercises the real
 //! composition the daemon's connection handler + `drain_queue` rely on — the real
-//! `SinkRegistry` newest-live handoff, the real `DeliveryQueue` (head readiness +
-//! freshness), and the real newline `Frame` protocol over a real Unix socket —
-//! with a test double only at the socket peer (the in-test `talk-to` clients). No
-//! GPU, mic, or ydotool.
+//! `SinkRegistry` newest-live handoff, the real `DeliveryQueue` (head readiness),
+//! and the real newline `Frame` protocol over a real Unix socket — with a test
+//! double only at the socket peer (the in-test `talk-to` clients). No GPU or mic.
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -20,7 +18,7 @@ use std::time::Duration;
 
 use ghostty_voice_core::protocol::{Command, Frame};
 use ghostty_voice_core::queue::DeliveryQueue;
-use ghostty_voice_core::sink::{ActiveSink, Route, SinkRegistry};
+use ghostty_voice_core::sink::{Route, SinkRegistry};
 
 /// Read one line from a wrapper connection and assert it is `register-sink`.
 fn expect_register(reader: &mut BufReader<UnixStream>) {
@@ -89,7 +87,7 @@ fn closing_the_active_wrapper_hands_off_to_the_other_live_wrapper() {
         .recv_timeout(Duration::from_secs(5))
         .unwrap();
     let id_a = registry.register();
-    assert_eq!(registry.active(), ActiveSink::Wrapper(id_a));
+    assert_eq!(registry.active(), Some(id_a));
 
     // Accept + register B second — the newest wrapper becomes the active sink.
     let (conn_b, _) = listener.accept().unwrap();
@@ -101,7 +99,7 @@ fn closing_the_active_wrapper_hands_off_to_the_other_live_wrapper() {
     let id_b = registry.register();
     assert_eq!(
         registry.active(),
-        ActiveSink::Wrapper(id_b),
+        Some(id_b),
         "the newest wrapper is the active Delivery sink",
     );
 
@@ -113,21 +111,22 @@ fn closing_the_active_wrapper_hands_off_to_the_other_live_wrapper() {
     registry.deregister(id_b);
     assert_eq!(
         registry.active(),
-        ActiveSink::Wrapper(id_a),
-        "closing the active wrapper hands off to the other live wrapper, not focused-window",
+        Some(id_a),
+        "closing the active wrapper hands off to the other live wrapper, not no-sink",
     );
     assert_eq!(registry.wrapper_count(), 1, "one wrapper still registered");
 
     // A transcript triggered NOW binds to the active sink (A) and drains to it via
     // the real queue + routing — exactly the daemon's drain path.
     let mut queue = DeliveryQueue::new();
-    let seq = queue.enqueue_at(Duration::from_secs(0));
+    let seq = queue.enqueue();
     let bound = registry.active();
-    assert_eq!(bound, ActiveSink::Wrapper(id_a));
+    assert_eq!(bound, Some(id_a));
     queue.set_ready(seq, transcript.to_owned());
 
-    let (head_seq, head_text, _freshness) = queue
-        .head_delivery(Duration::from_secs(1), Duration::from_secs(900))
+    let (head_seq, head_text) = queue
+        .next_to_type()
+        .map(|(s, t)| (s, t.to_owned()))
         .unwrap();
     assert_eq!(head_seq, seq);
     match registry.route(bound) {
@@ -135,9 +134,7 @@ fn closing_the_active_wrapper_hands_off_to_the_other_live_wrapper() {
             assert_eq!(wid, id_a, "routes to the surviving wrapper A");
             let mut conn_a_w = conn_a.try_clone().unwrap();
             conn_a_w
-                .write_all(
-                    format!("{}\n", Frame::Transcript(head_text.to_owned()).encode()).as_bytes(),
-                )
+                .write_all(format!("{}\n", Frame::Transcript(head_text).encode()).as_bytes())
                 .unwrap();
             conn_a_w.flush().unwrap();
         }
@@ -149,15 +146,15 @@ fn closing_the_active_wrapper_hands_off_to_the_other_live_wrapper() {
     let received = a_got_rx.recv_timeout(Duration::from_secs(5)).unwrap();
     assert_eq!(received, transcript);
 
-    // Now close the LAST wrapper (A): only now does the focused-window sink return.
+    // Now close the LAST wrapper (A): only now is there no active sink.
     a_drop_tx.send(()).unwrap();
     let mut tail_a = String::new();
     let _ = reader_a.read_line(&mut tail_a);
     registry.deregister(id_a);
     assert_eq!(
         registry.active(),
-        ActiveSink::FocusedWindow,
-        "the focused-window sink reactivates only when the last wrapper exits",
+        None,
+        "no active sink remains only when the last wrapper exits",
     );
     assert_eq!(registry.wrapper_count(), 0);
 

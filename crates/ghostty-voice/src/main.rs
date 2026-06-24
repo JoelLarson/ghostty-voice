@@ -1,10 +1,9 @@
 //! ghostty-voice walking skeleton.
 //!
 //! Record one utterance, transcribe it via a manually-started warm
-//! whisper-server, and type the transcript into the focused window. No daemon,
-//! no supervision, no accuracy stack — those come later. The point of this
-//! skeleton is to prove Vulkan transcription and ydotool injection end-to-end
-//! and to capture a real warm-latency number.
+//! whisper-server, and print the transcript. No daemon, no supervision, no
+//! accuracy stack — those come later. The point of this skeleton is to prove
+//! Vulkan transcription end-to-end and to capture a real warm-latency number.
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -13,7 +12,7 @@ use anyhow::{Context, Result, anyhow};
 use clap::Parser;
 use ghostty_voice_core::config::Config;
 use ghostty_voice_core::transcript::parse_transcript;
-use ghostty_voice_io::{audio, inject, transcribe};
+use ghostty_voice_io::{audio, transcribe};
 
 #[derive(Parser)]
 #[command(name = "ghostty-voice", about = "Voice dictation walking skeleton")]
@@ -48,7 +47,6 @@ fn main() -> Result<()> {
     }
 
     println!("{transcript}");
-    inject::type_text(&transcript, cfg.inject.key_delay_ms)?;
     Ok(())
 }
 

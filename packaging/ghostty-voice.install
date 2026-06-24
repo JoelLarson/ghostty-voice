@@ -6,27 +6,24 @@ post_install() {
          install -Dm644 /usr/share/ghostty-voice/config.toml.example \
            ~/.config/ghostty-voice/config.toml
 
-    2. Diagnose the environment (ydotoold / input group / /dev/uinput / trigger device):
-         ghostty-voice-ctl doctor
-
-    3. Triggers are read from /dev/input via evdev (no GNOME). Defaults are
-       Shift+F10 (Start: tap=latch, hold=push-to-talk) and Shift+F9 (Stop:
-       tap=stop, hold=hands-free VAD). Change keys/device in the [input]
-       section of ~/.config/ghostty-voice/config.toml; with more than one
-       keyboard, set device = "name:<your keyboard>".
-
-    4. Enable the daemon (it fetches the ~3 GB model on first run):
+    2. Enable the daemon (it fetches the ~3 GB model on first run):
          systemctl --user enable --now ghostty-voiced
        For dictation before/without a graphical login:
          loginctl enable-linger "$USER"
 
-    5. Optional: drive a single agent deterministically with the PTY wrapper.
-       `talk-to <command>` wraps the agent on a pseudo-terminal and registers a
-       wrapper sink, so your dictation is injected straight into that agent
-       (no trailing Enter), not whatever window is focused:
+    3. Drive your agent with the PTY wrapper — `talk-to` IS the interface.
+       It wraps the agent on a pseudo-terminal and registers a wrapper sink, so
+       your dictation is injected straight into that agent's PTY (no trailing
+       Enter):
          talk-to claude
          talk-to ssh host claude
-       Exit it to return to the default focused-window (ydotool) dictation.
+       While you are in the talk-to window: Shift+F10 toggles a batch recording,
+       Shift+F9 starts a hands-free VAD recording. Triggers fire ONLY in that
+       window — there is no system-wide hotkey. Cancel with
+       `ghostty-voice-ctl cancel`.
+
+    4. Diagnose (is the daemon reachable?):
+         ghostty-voice-ctl doctor
 
     See /usr/share/doc/ghostty-voice/README.md for the full guide.
 EOF
@@ -42,9 +39,9 @@ post_upgrade() {
 
     A running ghostty-voiced keeps the OLD binary in memory until it is
     restarted. A stale daemon speaks an older control protocol, so `talk-to`
-    shows `incompatible` and dictation silently falls back to the focused-window
-    (ydotool) path instead of the wrapped agent. Run the command above as the
-    user whose daemon is running (not root).
+    shows `incompatible` and dictation will not reach the wrapped agent until
+    you restart. Run the command above as the user whose daemon is running
+    (not root).
 EOF
 
   # Best-effort: restart any ALREADY-RUNNING per-user instances so the new binary

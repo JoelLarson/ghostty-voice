@@ -1,9 +1,11 @@
 # ghostty-voice
 
-Voice dictation that types clean English prose into the focused Ghostty terminal on
-GNOME/Wayland, so you can speak instructions to a coding agent running over SSH. The
-agent's own voice features can't cross SSH, so Whisper runs locally and the text is
-injected as if typed from the keyboard.
+Voice dictation that types clean English prose into a coding agent you run inside
+`talk-to`, so you can speak instructions to an agent running over SSH. The agent's own
+voice features can't cross SSH, so Whisper runs locally and the text is delivered straight
+into the agent's PTY. `talk-to` is the **sole interface**: triggers and delivery both go
+through the wrapper you are actively using — there is no system-wide hotkey and no typing
+into the focused window.
 
 **North-star:** fully **hands-free**, **conversational** dictation — talk naturally with
 pauses, words flow in behind you, a long silence ends it. That experience is **Continuous
@@ -61,54 +63,42 @@ Abort the **Recorder**'s current recording and discard its audio. Does not touch
 utterances already in the **Delivery queue**.
 
 **Delivery sink** _(or **Sink**)_:
-A destination a **Transcript** is delivered to. Exactly **one sink is active** at any
-moment; the daemon always delivers to the active sink. Two kinds:
-- **Focused-window sink** — the default. Types into whatever window is focused via
-  `ydotool`. Reproduces the original behavior; the only sink when nothing else is
-  registered. Carries the "wrong-window" risk that the **Freshness window** guards against.
-- **Wrapper sink** — a running `talk-to`. Registers over the control socket and receives
-  the **Transcript** *pushed* from the daemon, then writes it into the wrapped agent's PTY.
-  Delivery is to a known pipe, so there is no "wrong-window" risk.
+A destination a **Transcript** is delivered to — always a **wrapper sink**, a running
+`talk-to`. At most **one sink is active** at a time; with no `talk-to` registered there is
+**no active sink** and nowhere to deliver. A wrapper registers over the control socket and
+receives the **Transcript** *pushed* from the daemon, then writes it into the wrapped
+agent's PTY. Delivery is to a known pipe, so there is no "wrong-window" risk.
 
 Switching is sequential, never concurrent — launching a wrapper makes it the active sink;
 only ever **one active at a time**. With **several wrappers** registered, closing the
 active one hands off to the **most-recently-registered still-live** wrapper sink (the
-*newest-live handoff*); the focused-window sink reactivates only when the **last** wrapper
-exits — never while another wrapper is still live. An utterance's target sink is **bound
-when the utterance is triggered**, not when its transcript is ready. If the bound sink is
-gone at delivery, the transcript is **Held-for-replay** and you are asked where to send it
-— it is **never** silently redirected to whatever sink is active now (so an utterance bound
-to a now-dead wrapper is still held even when a handoff kept another wrapper active).
+*newest-live handoff*); the active sink falls back to **none** only when the **last**
+wrapper exits — never while another wrapper is still live. An utterance's target sink is
+**bound when the utterance is triggered**, not when its transcript is ready. If the bound
+sink is gone at delivery, the transcript is **Held-for-replay** — it is **never** silently
+redirected to whatever sink is active now (so an utterance bound to a now-dead wrapper is
+still held even when a handoff kept another wrapper active).
 
 **Auto-type**:
 Delivering a **Transcript** to the **active Delivery sink**, **without** pressing Enter
-(the human reviews before submitting). The default sink types into the focused window via
-`ydotool`; a **wrapper sink** writes into the wrapped agent's PTY. Gated by the
-**Freshness window** *for the focused-window sink* (see that entry).
-
-**Freshness window**:
-A generous time-based backstop (~15 min) after a recording ends, gating **Auto-type** **for
-the focused-window sink only**. That sink has no window identity (the daemon has no
-compositor introspection — S8), so it cannot tell whether you are still in the originally
-targeted window; the window is a **best-effort proxy** for "you're probably still there." A
-realistic batch transcription types itself well within it; past it, the transcript is
-**Held-for-replay**. It can still mis-target on a fast focus switch — the accepted limit of
-a sink with no target identity. The **wrapper sink** does **not** use it: its target is an
-exact PTY, so it delivers whenever ready, or holds if that PTY died.
+(the human reviews before submitting). A **wrapper sink** writes it into the wrapped
+agent's PTY. There is no time-based staleness gate — the PTY target is exact, so the only
+reason a transcript is not delivered is that the bound wrapper is gone (then it is
+**Held-for-replay**).
 
 **Held for replay**:
 A terminal state for an utterance whose **Transcript** was *not* delivered to its **bound
-target** — the focused-window sink went stale (past the **Freshness window**), a delivery
-failed, or a **wrapper sink** died before delivery. The transcript is cached; recovery is
-**never** a silent redirect to the current focus — it is re-routed on demand to a chosen
-sink via **Replay-last**.
+target** — the bound **wrapper sink** died before delivery, no wrapper was registered at
+trigger time, or a delivery write failed. The transcript is cached; recovery is **never** a
+silent redirect — it is re-routed on demand to the active wrapper sink via **Replay-last**.
 
 **Replay-last**:
-Re-route a cached **Transcript** to a chosen **Delivery sink** on demand — by default the
-most-recent held one. **Recovery-only**: for when a delivery's **bound target** was gone
-(you left the focused window, or a **wrapper sink** crashed). The natural generalization is
-a transcript-history surface — cached transcripts newest→oldest, route any to any sink — of
-which Replay-last is the top entry. Not part of the hands-free happy path.
+Re-deliver a cached **Transcript** to the **active wrapper sink** on demand — by default
+the most-recent held one; errors when no `talk-to` is registered. **Recovery-only**: for
+when a delivery's **bound target** was gone (the **wrapper sink** crashed, or none was
+registered). The natural generalization is a transcript-history surface — cached
+transcripts newest→oldest — of which Replay-last is the top entry. Not part of the
+hands-free happy path.
 
 **Correction dictionary**:
 A deterministic, case-insensitive find/replace post-processing step that fixes jargon

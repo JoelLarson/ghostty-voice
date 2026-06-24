@@ -341,7 +341,7 @@ mod tests {
         assert_eq!(assembled, "rebase onto main then push");
 
         let mut q = DeliveryQueue::new();
-        let seq = q.enqueue_at(Duration::ZERO);
+        let seq = q.enqueue();
         q.set_ready(seq, assembled.clone());
 
         // One delivery: the head is ready -> deliver -> resolve -> queue empty.

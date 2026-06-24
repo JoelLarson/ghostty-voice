@@ -1,9 +1,9 @@
 //! ghostty-voice-ctl — thin control client.
 //!
 //! Manual commands connect to the daemon's Unix socket, write one command word,
-//! print the reply line, and exit. The everyday triggers are tactile (evdev,
-//! read by the daemon; configured in `[input]`); `doctor` diagnoses the
-//! environment.
+//! print the reply line, and exit. The everyday triggers are recognized inside
+//! `talk-to` (Shift+F10/F9), not here; this client is for one-shot commands like
+//! `cancel`, `status`, `reload`, and `replay-last`, plus `doctor`.
 
 use std::io::{Read, Write};
 use std::net::Shutdown;
@@ -39,9 +39,9 @@ enum Cmd {
     Status,
     /// Re-read non-model config.
     Reload,
-    /// Re-inject the most-recent cached transcript (refocus Ghostty first).
+    /// Re-deliver the most-recent cached transcript into the active talk-to.
     ReplayLast,
-    /// Diagnose the environment (ydotoold, input group, uinput, trigger device).
+    /// Diagnose the environment (is the daemon reachable?).
     Doctor,
 }
 
@@ -92,23 +92,14 @@ fn main() -> Result<()> {
     }
 }
 
-/// Probe the injection environment and print the diagnostic checks.
+/// Probe whether the daemon is reachable and print the diagnostic checks.
 fn doctor() -> Result<()> {
     use ghostty_voice_core::doctor::{CheckStatus, evaluate};
 
-    let ydotool_socket = std::env::var("YDOTOOL_SOCKET").unwrap_or_else(|_| {
-        std::env::var("XDG_RUNTIME_DIR")
-            .map(|d| format!("{d}/.ydotool_socket"))
-            .unwrap_or_else(|_| "/tmp/.ydotool_socket".to_owned())
-    });
-
-    let device = load_config().input.device;
-    let probes = ghostty_voice_core::doctor::Probes {
-        ydotool_socket_exists: Path::new(&ydotool_socket).exists(),
-        in_input_group: in_group("input"),
-        uinput_present: Path::new("/dev/uinput").exists(),
-        trigger_device_readable: ghostty_voice_io::input::device_available(&device),
-    };
+    let daemon_reachable = socket_path()
+        .map(|p| UnixStream::connect(p).is_ok())
+        .unwrap_or(false);
+    let probes = ghostty_voice_core::doctor::Probes { daemon_reachable };
 
     let mut all_ok = true;
     for check in evaluate(&probes) {
@@ -125,34 +116,6 @@ fn doctor() -> Result<()> {
     }
     println!("environment looks good.");
     Ok(())
-}
-
-/// Is the current user a member of `group` (via `id -Gn`)?
-fn in_group(group: &str) -> bool {
-    std::process::Command::new("id")
-        .arg("-Gn")
-        .output()
-        .ok()
-        .map(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .split_whitespace()
-                .any(|g| g == group)
-        })
-        .unwrap_or(false)
-}
-
-fn config_path() -> Result<PathBuf> {
-    ghostty_voice_core::config::config_path().context("HOME is not set")
-}
-
-/// Load config (defaults if missing/invalid) — used by `doctor` to find the
-/// configured trigger device.
-fn load_config() -> ghostty_voice_core::config::Config {
-    config_path()
-        .ok()
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .and_then(|s| ghostty_voice_core::config::Config::from_toml_str(&s).ok())
-        .unwrap_or_default()
 }
 
 #[cfg(test)]

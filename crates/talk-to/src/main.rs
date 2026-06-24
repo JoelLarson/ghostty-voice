@@ -26,6 +26,7 @@ use ghostty_voice_core::link::{LinkState, Registration, classify_first_line};
 use ghostty_voice_core::protocol::{Frame, PROTOCOL_VERSION};
 use ghostty_voice_core::pty::{PtyError, injection_bytes, split_command};
 use ghostty_voice_core::strip;
+use ghostty_voice_core::trigger::{self, Segment};
 
 const STDIN: RawFd = libc::STDIN_FILENO;
 const STDOUT: RawFd = libc::STDOUT_FILENO;
@@ -179,17 +180,25 @@ fn proxy_loop(
             break;
         }
 
-        // stdin → child PTY (forward keystrokes; intercept the debug key).
+        // stdin → child PTY. Recognize the in-terminal triggers (Shift+F10/F9):
+        // they are consumed and sent to the daemon, never forwarded to the child.
+        // The F12 debug key is still intercepted; everything else passes verbatim.
         if fds[0].revents & libc::POLLIN != 0 {
             let r = unsafe { libc::read(STDIN, buf.as_mut_ptr().cast(), buf.len()) };
             if r > 0 {
                 let data = &buf[..r as usize];
-                if data == DEBUG_KEY {
-                    // Inject the hardcoded string with NO trailing newline; the
-                    // debug key itself is consumed (not forwarded).
-                    write_all_fd(master, &injection_bytes(DEBUG_STRING));
-                } else {
-                    write_all_fd(master, data);
+                for segment in trigger::scan(data) {
+                    match segment {
+                        // A trigger fires only because the user is in this window:
+                        // send the command to the daemon over the control socket.
+                        Segment::Trigger(t) => send_command(t.command_word()),
+                        // F12 debug aid: inject a hardcoded string (no trailing
+                        // Enter); the debug key itself is consumed.
+                        Segment::Forward(bytes) if bytes == DEBUG_KEY => {
+                            write_all_fd(master, &injection_bytes(DEBUG_STRING));
+                        }
+                        Segment::Forward(bytes) => write_all_fd(master, bytes),
+                    }
                 }
             }
         }
@@ -411,6 +420,29 @@ fn link_log_path() -> Option<PathBuf> {
 /// The daemon's control socket (matching the daemon and `ghostty-voice-ctl`).
 fn daemon_socket_path() -> Option<PathBuf> {
     ghostty_voice_core::config::socket_path()
+}
+
+/// Send a one-shot command word (e.g. `toggle`/`vad`) to the daemon's control
+/// socket — the same one-command-then-reply path `ghostty-voice-ctl` uses, so the
+/// daemon's command handling is reused unchanged. Runs on a detached thread so a
+/// slow or absent daemon never stalls the proxy loop; the reply is ignored (the
+/// status strip already reflects the resulting state over the push link). Failures
+/// are logged to the talk-to log, not the terminal (which is mid-TUI).
+fn send_command(word: &'static str) {
+    let Some(path) = daemon_socket_path() else {
+        log_link("cannot send trigger: no daemon socket path (XDG_RUNTIME_DIR unset)");
+        return;
+    };
+    std::thread::spawn(move || match UnixStream::connect(&path) {
+        Ok(mut stream) => {
+            if let Err(e) = stream.write_all(format!("{word}\n").as_bytes()) {
+                log_link(&format!("trigger '{word}' write failed ({e})"));
+            }
+        }
+        Err(e) => log_link(&format!(
+            "trigger '{word}' could not reach the daemon ({e})"
+        )),
+    });
 }
 
 /// Paint the status strip onto the real terminal at `strip_row`, showing

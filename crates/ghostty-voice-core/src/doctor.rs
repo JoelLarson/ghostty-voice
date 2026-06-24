@@ -1,9 +1,10 @@
 //! Environment diagnostics.
 //!
-//! The `doctor` command probes the environment (ydotoold socket, `input` group,
-//! `/dev/uinput`, and the evdev trigger device) and reports actionable problems.
-//! The probing is the boundary; turning probe results into named checks is pure
-//! and tested here.
+//! Now that `talk-to` is the sole interface there is no input device or
+//! desktop-typing capability to check — the one thing a user can get wrong is not
+//! having the daemon running. `doctor` probes whether the daemon's control socket
+//! is reachable. The probing is the boundary; turning probe results into named
+//! checks is pure and tested here.
 
 /// The outcome of one check.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,12 +23,9 @@ pub struct Check {
 /// Boolean probe results gathered at the IO boundary.
 #[derive(Debug, Clone, Copy)]
 pub struct Probes {
-    pub ydotool_socket_exists: bool,
-    pub in_input_group: bool,
-    pub uinput_present: bool,
-    /// The configured evdev trigger device could be opened: without it the
-    /// tactile Start/Stop keys can't be read.
-    pub trigger_device_readable: bool,
+    /// The daemon's control socket could be connected to — without it no command
+    /// or `talk-to` registration can reach `ghostty-voiced`.
+    pub daemon_reachable: bool,
 }
 
 /// Turn probe results into named checks with actionable problem messages.
@@ -43,29 +41,12 @@ pub fn evaluate(probes: &Probes) -> Vec<Check> {
         }
     }
 
-    vec![
-        check(
-            "ydotoold socket",
-            probes.ydotool_socket_exists,
-            "ydotoold socket not found — start ydotoold and/or set YDOTOOL_SOCKET",
-        ),
-        check(
-            "input group",
-            probes.in_input_group,
-            "user is not in the 'input' group — add it for /dev/uinput access, then re-login",
-        ),
-        check(
-            "uinput device",
-            probes.uinput_present,
-            "/dev/uinput is missing — load the uinput kernel module",
-        ),
-        check(
-            "trigger device",
-            probes.trigger_device_readable,
-            "the evdev trigger device can't be opened — check [input].device and that you're \
-             in the 'input' group (list devices with `cat /proc/bus/input/devices`)",
-        ),
-    ]
+    vec![check(
+        "daemon",
+        probes.daemon_reachable,
+        "ghostty-voiced is not reachable on its control socket — start it \
+         (e.g. `systemctl --user start ghostty-voiced`)",
+    )]
 }
 
 /// True when every check passed.
@@ -77,55 +58,22 @@ pub fn all_ok(checks: &[Check]) -> bool {
 mod tests {
     use super::*;
 
-    const HEALTHY: Probes = Probes {
-        ydotool_socket_exists: true,
-        in_input_group: true,
-        uinput_present: true,
-        trigger_device_readable: true,
-    };
-
     #[test]
-    fn healthy_environment_has_no_problems() {
-        let checks = evaluate(&HEALTHY);
+    fn a_reachable_daemon_has_no_problems() {
+        let checks = evaluate(&Probes {
+            daemon_reachable: true,
+        });
         assert!(all_ok(&checks));
-        assert_eq!(checks.len(), 4);
+        assert_eq!(checks.len(), 1);
     }
 
     #[test]
-    fn missing_trigger_device_is_flagged() {
-        let probes = Probes {
-            trigger_device_readable: false,
-            ..HEALTHY
-        };
-        let checks = evaluate(&probes);
+    fn an_unreachable_daemon_is_flagged() {
+        let checks = evaluate(&Probes {
+            daemon_reachable: false,
+        });
         assert!(!all_ok(&checks));
-        let dev = checks.iter().find(|c| c.name == "trigger device").unwrap();
-        assert!(matches!(dev.status, CheckStatus::Problem(_)));
-    }
-
-    #[test]
-    fn missing_ydotool_socket_is_flagged() {
-        let probes = Probes {
-            ydotool_socket_exists: false,
-            ..HEALTHY
-        };
-        let checks = evaluate(&probes);
-        assert!(!all_ok(&checks));
-        let socket = checks.iter().find(|c| c.name == "ydotoold socket").unwrap();
-        assert!(matches!(socket.status, CheckStatus::Problem(_)));
-    }
-
-    #[test]
-    fn missing_input_group_is_flagged() {
-        let probes = Probes {
-            in_input_group: false,
-            ..HEALTHY
-        };
-        let checks = evaluate(&probes);
-        assert!(
-            checks
-                .iter()
-                .any(|c| c.name == "input group" && c.status != CheckStatus::Ok)
-        );
+        let daemon = checks.iter().find(|c| c.name == "daemon").unwrap();
+        assert!(matches!(daemon.status, CheckStatus::Problem(_)));
     }
 }

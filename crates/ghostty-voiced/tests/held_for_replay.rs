@@ -12,11 +12,10 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::thread;
-use std::time::Duration;
 
 use ghostty_voice_core::protocol::Command;
 use ghostty_voice_core::queue::DeliveryQueue;
-use ghostty_voice_core::sink::{ActiveSink, Route, SinkRegistry};
+use ghostty_voice_core::sink::{Route, SinkRegistry};
 use ghostty_voice_io::cache::{latest_transcript, store_transcript};
 
 /// A unique scratch transcripts dir, removed on drop.
@@ -74,17 +73,17 @@ fn a_transcript_bound_to_a_dead_wrapper_is_held_and_recoverable_not_redirected()
     let id = registry.register();
     // Trigger-time binding: captured while the wrapper is still alive.
     let bound = registry.active();
-    assert_eq!(bound, ActiveSink::Wrapper(id));
+    assert_eq!(bound, Some(id));
 
-    // The wrapper dies: block until EOF on the connection, then deregister — the
-    // focused-window sink reactivates (the default floor).
+    // The wrapper dies: block until EOF on the connection, then deregister — with
+    // no other wrapper there is no active sink.
     let mut tail = String::new();
     let _ = reader.read_line(&mut tail); // 0 once the client drops
     registry.deregister(id);
     assert_eq!(
         registry.active(),
-        ActiveSink::FocusedWindow,
-        "focused-window sink reactivates when the wrapper disconnects",
+        None,
+        "no active sink when the wrapper disconnects",
     );
     assert!(!registry.is_live(id));
 
@@ -92,21 +91,18 @@ fn a_transcript_bound_to_a_dead_wrapper_is_held_and_recoverable_not_redirected()
     // write-before-deliver safety net.
     let transcript = "refactor the parser into its own module";
     let mut queue = DeliveryQueue::new();
-    let seq = queue.enqueue_at(Duration::from_secs(0));
+    let seq = queue.enqueue();
     store_transcript(tdir, transcript, 5).unwrap();
     queue.set_ready(seq, transcript.to_owned());
 
     // Drain: the bound wrapper is dead → Held-for-replay. NOT Wrapper (not
-    // delivered to the dead PTY) and NOT FocusedWindow (not redirected into the
-    // window focused now), even though FocusedWindow is the active sink.
-    let (head_seq, _text, _freshness) = queue
-        .head_delivery(Duration::from_secs(1), Duration::from_secs(900))
-        .unwrap();
+    // delivered to the dead PTY) and never redirected to whatever is active now.
+    let head_seq = queue.next_to_type().unwrap().0;
     assert_eq!(head_seq, seq);
     assert_eq!(
         registry.route(bound),
         Route::Held,
-        "a dead bound wrapper must Hold, never redirect to the current focus",
+        "a dead bound wrapper must Hold, never redirect to whatever is active now",
     );
     queue.resolve(head_seq);
 

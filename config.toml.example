@@ -47,30 +47,10 @@ clip_cut_pause_seconds = 1.0
 session_end_silence_seconds = 10.0
 min_clip_seconds = 2.0
 
-[inject]
-# ydotool inter-key delay in ms — raise it if characters drop.
-key_delay_ms = 12
-
-[input]
-# Tactile triggers, read directly from /dev/input via evdev (no GNOME). Edit
-# here and restart the daemon to apply. Note: evdev does NOT grab the device, so
-# the trigger key also does its normal thing (an F-key still sends its escape to
-# the terminal) — pick a spare key you don't otherwise use.
-#   start_combo  - Start key: a quick TAP latches recording; HOLD = push-to-talk
-#                  (records while held, stops on release; record-on-press so the
-#                  first word is never clipped).
-#   stop_combo   - Stop key: a quick TAP stops a latched recording; HOLD starts a
-#                  hands-free VAD recording (auto-stops on silence).
-#   hold_threshold_ms - tap-vs-hold cutoff; a release at/after this is a hold.
-#   device       - which ONE input device to read. "auto" picks the lowest real
-#                  keyboard (virtual/injector devices are skipped). With more
-#                  than one keyboard, pin yours: "name:<substring>" of the device
-#                  name (see `cat /proc/bus/input/devices`) or a "/dev/input/eventN"
-#                  path. Only this device is read.
-start_combo = "Shift+F10"
-stop_combo = "Shift+F9"
-hold_threshold_ms = 250
-device = "auto"
+# Triggers are not configured here. They are recognized inside `talk-to`: while
+# you are in the wrapped-agent window, Shift+F10 toggles a batch recording and
+# Shift+F9 starts a hands-free VAD recording. `ghostty-voice-ctl cancel` aborts
+# the current recording. There is no system-wide hotkey.
 
 [feedback]
 # Hot-path audio cues, all played via `paplay` (PipeWire — no libcanberra). Two
@@ -90,9 +70,9 @@ sound_stop  = "complete"
 wav_keep = 30
 # Transcripts kept to back `replay-last` (count-capped, small).
 transcript_keep = 5
-# Freshness window (seconds): a transcript produced within this long after the
-# recording ends is auto-typed; slower than this it's held for `replay-last`.
-# Generous backstop (~15 min), not a routine gate — hands-free is the priority.
+# Transcription-retry window (seconds): how long the daemon keeps retrying a
+# transcription while whisper-server is unreachable (e.g. mid-restart) before
+# giving up and holding the utterance for `replay-last`. Generous backstop (~15 min).
 retry_window_seconds = 900
 
 # Deterministic jargon spell-fixer (S4): case-insensitive, whole-word

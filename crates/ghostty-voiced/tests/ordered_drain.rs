@@ -80,8 +80,8 @@ fn queue_drains_in_record_order_despite_a_slow_first_transcription() {
     let (fast_host, fast_port, fast) = fake_whisper("second", Duration::from_millis(0));
 
     let mut queue = DeliveryQueue::new();
-    let a = queue.enqueue_at(Duration::from_secs(0)); // recorded first
-    let b = queue.enqueue_at(Duration::from_secs(0)); // recorded second
+    let a = queue.enqueue(); // recorded first
+    let b = queue.enqueue(); // recorded second
 
     let wav_a = sample_wav();
     let wav_b = sample_wav();
@@ -107,11 +107,9 @@ fn queue_drains_in_record_order_despite_a_slow_first_transcription() {
         })
     };
 
-    // The window: the daemon would set transcripts ready as they arrive and
-    // drain the head whenever it is ready. Mirror that here.
+    // The daemon would set transcripts ready as they arrive and drain the head
+    // whenever it is ready. Mirror that here.
     let mut delivered: Vec<String> = Vec::new();
-    let now = Duration::from_secs(1);
-    let window = Duration::from_secs(900);
 
     // Collect both transcripts (order of arrival is #2 then #1).
     let mut arrivals = Vec::new();
@@ -127,10 +125,10 @@ fn queue_drains_in_record_order_despite_a_slow_first_transcription() {
     // Feed readiness in arrival order, draining the head whenever ready.
     for (seq, text) in arrivals {
         queue.set_ready(seq, text);
-        while let Some((head_seq, head_text, _delivery)) = queue.head_delivery(now, window) {
-            delivered.push(head_text.to_owned());
-            let resolved = head_seq;
-            queue.resolve(resolved);
+        while let Some((head_seq, head_text)) = queue.next_to_type().map(|(s, t)| (s, t.to_owned()))
+        {
+            delivered.push(head_text);
+            queue.resolve(head_seq);
         }
     }
 

@@ -1,12 +1,11 @@
 //! Integration test: a `talk-to` **wrapper sink** registers over the control
 //! socket, becomes the single active **Delivery sink**, receives pushed frames
-//! (a state update and a Transcript), and on disconnect the **focused-window
-//! sink** reactivates.
+//! (a state update and a Transcript), and on disconnect leaves no active sink.
 //!
 //! Like `ordered_drain.rs`, this exercises the real composition the daemon relies
 //! on — the real newline `Frame` protocol and the real `SinkRegistry` over a real
 //! Unix socket — with a test double only at the socket peer (the in-test daemon).
-//! No GPU, mic, or ydotool involved.
+//! No GPU or mic involved.
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -15,7 +14,7 @@ use std::thread;
 use std::time::Duration;
 
 use ghostty_voice_core::protocol::{Command, Frame, State};
-use ghostty_voice_core::sink::{ActiveSink, SinkRegistry};
+use ghostty_voice_core::sink::SinkRegistry;
 
 #[test]
 fn a_registered_wrapper_sink_becomes_active_and_receives_pushed_frames() {
@@ -43,15 +42,14 @@ fn a_registered_wrapper_sink_becomes_active_and_receives_pushed_frames() {
         let mut registry = SinkRegistry::new();
         assert_eq!(
             registry.active(),
-            ActiveSink::FocusedWindow,
-            "the floor before any wrapper registers"
+            None,
+            "no active sink before any wrapper registers"
         );
 
         if matches!(Command::parse(&first), Ok(Command::RegisterSink(_))) {
             let id = registry.register();
             // Exactly one active sink, and it is now the wrapper.
-            tx.send(registry.active() == ActiveSink::Wrapper(id))
-                .unwrap();
+            tx.send(registry.active() == Some(id)).unwrap();
 
             // Push live state, then a finished Transcript — newline-framed.
             stream
@@ -73,8 +71,7 @@ fn a_registered_wrapper_sink_becomes_active_and_receives_pushed_frames() {
             let mut tail = String::new();
             let _ = reader.read_line(&mut tail);
             registry.deregister(id);
-            tx.send(registry.active() == ActiveSink::FocusedWindow)
-                .unwrap();
+            tx.send(registry.active().is_none()).unwrap();
         }
     });
 
@@ -108,12 +105,12 @@ fn a_registered_wrapper_sink_becomes_active_and_receives_pushed_frames() {
         "the wrapper sink must become the active Delivery sink on register",
     );
 
-    // Drop the client → the daemon deregisters and the focused-window sink returns.
+    // Drop the client → the daemon deregisters and there is no active sink.
     drop(creader);
     drop(client);
     assert!(
         rx.recv_timeout(Duration::from_secs(5)).unwrap(),
-        "the focused-window sink must reactivate when the wrapper disconnects",
+        "no active sink remains when the wrapper disconnects",
     );
 
     server.join().unwrap();

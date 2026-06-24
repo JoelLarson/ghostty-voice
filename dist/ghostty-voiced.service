@@ -1,10 +1,8 @@
 [Unit]
 Description=ghostty-voice dictation daemon
 Documentation=https://github.com/JoelLarson/ghostty-voice
-# ydotool.service is shipped by the ydotool package; Wants+After pull ydotoold
-# up automatically when the daemon starts (ydotoold is health-checked, not supervised).
-After=graphical-session.target pipewire.service ydotool.service
-Wants=pipewire.service ydotool.service
+After=graphical-session.target pipewire.service
+Wants=pipewire.service
 
 [Service]
 Type=simple

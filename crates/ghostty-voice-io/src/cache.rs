@@ -5,9 +5,9 @@
 //! write. The retention policy and the name format are pure core logic
 //! (`ghostty_voice_core::cache`); this adapter is the fs boundary around them.
 //!
-//! The transcript is written here *before* typing is attempted, so a delivery
-//! is never lost even if `ydotool` then fails — `replay-last` reads the most
-//! recent transcript back via [`latest_transcript`].
+//! The transcript is written here *before* delivery is attempted, so a delivery
+//! is never lost even if the wrapper-sink PTY write then fails — `replay-last`
+//! reads the most recent transcript back via [`latest_transcript`].
 
 use std::fs;
 use std::path::{Path, PathBuf};

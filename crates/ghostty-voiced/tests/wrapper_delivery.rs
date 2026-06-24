@@ -3,10 +3,9 @@
 //! hands-free happy path's delivery hop.
 //!
 //! Like `ordered_drain.rs`, this exercises the real composition the daemon's
-//! `drain_queue` relies on — the real `DeliveryQueue` (head readiness + freshness),
-//! the real `SinkRegistry` routing, and the real newline `Frame` protocol over a
-//! real Unix socket — with a test double only at the socket peer. No GPU, mic, or
-//! ydotool.
+//! `drain_queue` relies on — the real `DeliveryQueue` (head readiness), the real
+//! `SinkRegistry` routing, and the real newline `Frame` protocol over a real Unix
+//! socket — with a test double only at the socket peer. No GPU or mic.
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -16,7 +15,7 @@ use std::time::Duration;
 
 use ghostty_voice_core::protocol::{Command, Frame};
 use ghostty_voice_core::queue::DeliveryQueue;
-use ghostty_voice_core::sink::{ActiveSink, Route, SinkRegistry};
+use ghostty_voice_core::sink::{Route, SinkRegistry};
 
 #[test]
 fn a_bound_wrapper_sink_receives_the_pushed_transcript_end_to_end() {
@@ -60,25 +59,24 @@ fn a_bound_wrapper_sink_receives_the_pushed_transcript_end_to_end() {
     let id = registry.register();
 
     let mut queue = DeliveryQueue::new();
-    let seq = queue.enqueue_at(Duration::from_secs(0));
+    let seq = queue.enqueue();
     // Bind the target sink at trigger time — the active sink is the wrapper.
     let bound = registry.active();
-    assert_eq!(bound, ActiveSink::Wrapper(id));
+    assert_eq!(bound, Some(id));
     queue.set_ready(seq, transcript.to_owned());
 
-    // Drain the head exactly as the daemon does: readiness + freshness from the
-    // queue, then route by the bound sink.
-    let now = Duration::from_secs(1);
-    let window = Duration::from_secs(900);
-    let (head_seq, head_text, _freshness) = queue.head_delivery(now, window).unwrap();
+    // Drain the head exactly as the daemon does: head readiness from the queue,
+    // then route by the bound sink.
+    let (head_seq, head_text) = queue
+        .next_to_type()
+        .map(|(s, t)| (s, t.to_owned()))
+        .unwrap();
     assert_eq!(head_seq, seq);
     match registry.route(bound) {
         Route::Wrapper(wid) => {
             assert_eq!(wid, id, "routes to the bound wrapper sink");
-            conn.write_all(
-                format!("{}\n", Frame::Transcript(head_text.to_owned()).encode()).as_bytes(),
-            )
-            .unwrap();
+            conn.write_all(format!("{}\n", Frame::Transcript(head_text).encode()).as_bytes())
+                .unwrap();
             conn.flush().unwrap();
         }
         other => panic!("expected a wrapper route, got {other:?}"),
@@ -99,19 +97,17 @@ fn a_bound_wrapper_sink_receives_the_pushed_transcript_end_to_end() {
 }
 
 #[test]
-fn with_no_wrapper_registered_delivery_routes_to_the_focused_window_sink() {
-    // Additivity: with nothing registered the bound sink is the focused-window
-    // sink, so the daemon takes today's `ydotool` Auto-type path unchanged.
+fn with_no_wrapper_registered_delivery_is_held() {
+    // With nothing registered there is no active sink, so a triggered utterance
+    // binds to None and is Held-for-replay — never typed anywhere.
     let registry = SinkRegistry::new();
     let mut queue = DeliveryQueue::new();
-    let seq = queue.enqueue_at(Duration::from_secs(0));
+    let seq = queue.enqueue();
     let bound = registry.active();
-    assert_eq!(bound, ActiveSink::FocusedWindow);
+    assert_eq!(bound, None);
     queue.set_ready(seq, "hello".to_owned());
 
-    let (head_seq, _text, _freshness) = queue
-        .head_delivery(Duration::from_secs(1), Duration::from_secs(900))
-        .unwrap();
+    let (head_seq, _text) = queue.next_to_type().unwrap();
     assert_eq!(head_seq, seq);
-    assert_eq!(registry.route(bound), Route::FocusedWindow);
+    assert_eq!(registry.route(bound), Route::Held);
 }

@@ -1,30 +1,24 @@
-//! Integration test: `status` reports the active **Delivery sink** and the
-//! registered **wrapper sink** count over a real socket — so a user
-//! can confirm routing (wrapper sink vs focused-window sink) without tailing
-//! journald.
+//! Integration test: `status` reports how many **wrapper sinks** are registered
+//! over a real socket — so a user can confirm there is somewhere to deliver
+//! (`wrappers>0`) without tailing journald.
 //!
 //! Like `ordered_drain.rs` / `sink_registration.rs`, this exercises the real
 //! composition the daemon's status path relies on — the real `SinkRegistry`
-//! (active sink + `wrapper_count`) and the real `StatusReport` encode/parse over a
-//! real Unix socket — with a test double only at the socket peer. No GPU/mic/ydotool.
+//! (`wrapper_count`) and the real `StatusReport` encode/parse over a real Unix
+//! socket — with a test double only at the socket peer. No GPU/mic.
 
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::thread;
 
-use ghostty_voice_core::protocol::{SinkKind, State, StatusReport};
-use ghostty_voice_core::sink::{ActiveSink, SinkRegistry};
+use ghostty_voice_core::protocol::{State, StatusReport};
+use ghostty_voice_core::sink::SinkRegistry;
 
 /// Build the `status` reply from a registry exactly as the daemon does: the
-/// active sink kind from `ActiveSink`, the count from `wrapper_count()`.
+/// state plus the count from `wrapper_count()`.
 fn report_from(registry: &SinkRegistry, state: State) -> StatusReport {
-    let active_sink = match registry.active() {
-        ActiveSink::Wrapper(_) => SinkKind::Wrapper,
-        ActiveSink::FocusedWindow => SinkKind::FocusedWindow,
-    };
     StatusReport {
         state,
-        active_sink,
         wrapper_count: registry.wrapper_count(),
     }
 }
@@ -63,21 +57,19 @@ fn ask_status(registry: SinkRegistry) -> StatusReport {
 }
 
 #[test]
-fn status_reports_a_registered_wrapper_as_the_active_sink() {
+fn status_reports_the_registered_wrapper_count() {
     let mut registry = SinkRegistry::new();
     let _a = registry.register();
     let _b = registry.register(); // two wrappers; the newest is active
 
     let report = ask_status(registry);
-    assert_eq!(report.active_sink, SinkKind::Wrapper);
     assert_eq!(report.wrapper_count, 2);
     assert_eq!(report.state, State::Idle);
 }
 
 #[test]
-fn status_reports_the_focused_window_sink_when_no_wrapper_is_registered() {
+fn status_reports_zero_wrappers_when_none_registered() {
     let registry = SinkRegistry::new();
     let report = ask_status(registry);
-    assert_eq!(report.active_sink, SinkKind::FocusedWindow);
     assert_eq!(report.wrapper_count, 0);
 }

@@ -14,7 +14,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::thread;
 
 use ghostty_voice_core::protocol::{Frame, State};
-use ghostty_voice_core::sink::{ActiveSink, SinkRegistry};
+use ghostty_voice_core::sink::SinkRegistry;
 
 #[test]
 fn a_pushed_download_percent_renders_on_the_strip() {
@@ -38,7 +38,7 @@ fn a_pushed_download_percent_renders_on_the_strip() {
 
         let mut registry = SinkRegistry::new();
         let id = registry.register();
-        assert_eq!(registry.active(), ActiveSink::Wrapper(id));
+        assert_eq!(registry.active(), Some(id));
 
         stream
             .write_all(format!("{}\n", Frame::State(State::Downloading(None)).encode()).as_bytes())

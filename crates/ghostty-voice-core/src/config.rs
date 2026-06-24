@@ -7,7 +7,6 @@
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 /// Top-level configuration.
 #[derive(Debug, Clone, PartialEq, Default, Deserialize)]
@@ -15,8 +14,6 @@ use std::time::Duration;
 pub struct Config {
     pub whisper: WhisperConfig,
     pub audio: AudioConfig,
-    pub inject: InjectConfig,
-    pub input: InputConfig,
     pub feedback: FeedbackConfig,
     pub cache: CacheConfig,
     /// `[corrections]` — deterministic jargon spell-fixer (`"why do tool" =
@@ -89,35 +86,6 @@ pub struct AudioConfig {
     pub min_clip_seconds: f32,
 }
 
-/// `[inject]` — `ydotool` typing behavior.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct InjectConfig {
-    pub key_delay_ms: u32,
-}
-
-/// `[input]` — evdev tactile triggers. The two configurable combos drive
-/// recording directly via `/dev/input`, replacing the GNOME hotkey path:
-/// **Start** tap latches / hold is push-to-talk; **Stop** tap stops / hold
-/// starts a VAD recording. `hold_threshold_ms` is the tap-vs-hold cutoff, and
-/// `device` selects which one input device the daemon opens.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct InputConfig {
-    /// Start combo (default `Shift+F10`). Tap latches a recording; hold is
-    /// push-to-talk (record-on-press, stop on release).
-    pub start_combo: String,
-    /// Stop combo (default `Shift+F9`). Tap stops a latched recording; hold
-    /// starts a hands-free VAD recording.
-    pub stop_combo: String,
-    /// Tap-vs-hold threshold in ms (~250): a release at or past this is a hold.
-    pub hold_threshold_ms: u64,
-    /// Which input device to open: `auto` (first keyboard), a `/dev/input/...`
-    /// path, or a `name:<substring>` match against the device name. Only this
-    /// one device is read — the keylogger-grade capability is tightly scoped.
-    pub device: String,
-}
-
 /// `[feedback]` — audio cues played on the hot path via `paplay`.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -129,7 +97,7 @@ pub struct FeedbackConfig {
     pub sound_stop: String,
 }
 
-/// `[cache]` — WAV/transcript retention and the freshness backstop.
+/// `[cache]` — WAV/transcript retention and the transcription-retry window.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct CacheConfig {
@@ -137,9 +105,9 @@ pub struct CacheConfig {
     pub wav_keep: usize,
     /// How many transcripts to keep (backs `replay-last`).
     pub transcript_keep: usize,
-    /// Freshness window: a transcript produced within this many seconds of the
-    /// recording ending is auto-typed; otherwise held for replay. Generous
-    /// backstop (~15 min), not a routine gate.
+    /// Transcription-retry window: how many seconds the daemon keeps retrying a
+    /// transcription while whisper-server is unreachable (e.g. mid-restart) before
+    /// giving up and holding the utterance. Generous backstop (~15 min).
     pub retry_window_seconds: u64,
 }
 
@@ -173,30 +141,6 @@ impl Default for AudioConfig {
             clip_cut_pause_seconds: 1.0,
             session_end_silence_seconds: 10.0,
             min_clip_seconds: 2.0,
-        }
-    }
-}
-
-impl Default for InjectConfig {
-    fn default() -> Self {
-        Self { key_delay_ms: 12 }
-    }
-}
-
-impl InputConfig {
-    /// The tap-vs-hold threshold as a [`Duration`].
-    pub fn hold_threshold(&self) -> Duration {
-        Duration::from_millis(self.hold_threshold_ms)
-    }
-}
-
-impl Default for InputConfig {
-    fn default() -> Self {
-        Self {
-            start_combo: "Shift+F10".to_owned(),
-            stop_combo: "Shift+F9".to_owned(),
-            hold_threshold_ms: 250,
-            device: "auto".to_owned(),
         }
     }
 }
@@ -288,12 +232,6 @@ mod tests {
         assert_eq!(cfg.audio.session_end_silence_seconds, 10.0);
         assert_eq!(cfg.audio.min_clip_seconds, 2.0);
         assert!(cfg.corrections.is_empty());
-        assert_eq!(cfg.inject.key_delay_ms, 12);
-        // [input]: the shipped tactile defaults.
-        assert_eq!(cfg.input.start_combo, "Shift+F10");
-        assert_eq!(cfg.input.stop_combo, "Shift+F9");
-        assert_eq!(cfg.input.hold_threshold_ms, 250);
-        assert_eq!(cfg.input.device, "auto");
         assert_eq!(cfg.feedback.sound_start, "");
         assert_eq!(cfg.feedback.sound_stop, "");
         assert_eq!(cfg.cache.wav_keep, 30);
@@ -306,7 +244,7 @@ mod tests {
         let cfg = Config::from_toml_str("[whisper]\nport = 9000\n").unwrap();
         assert_eq!(cfg.whisper.port, 9000); // overridden
         assert_eq!(cfg.whisper.host, "127.0.0.1"); // still default
-        assert_eq!(cfg.inject.key_delay_ms, 12); // absent section -> default
+        assert_eq!(cfg.audio.device, "default"); // absent section -> default
     }
 
     #[test]
@@ -332,15 +270,6 @@ vad_threshold_pct = 5
 clip_cut_pause_seconds = 1.2
 session_end_silence_seconds = 8.0
 min_clip_seconds = 3.0
-
-[inject]
-key_delay_ms = 20
-
-[input]
-start_combo = "Ctrl+Alt+R"
-stop_combo = "Ctrl+Alt+S"
-hold_threshold_ms = 300
-device = "name:Keychron"
 
 [feedback]
 sound_start = "/usr/share/ghostty-voice/start.wav"
@@ -375,11 +304,6 @@ retry_window_seconds = 1200
         assert_eq!(cfg.audio.min_clip_seconds, 3.0);
         assert_eq!(cfg.corrections.get("why do tool").unwrap(), "ydotool");
         assert_eq!(cfg.corrections.get("ghosty").unwrap(), "Ghostty");
-        assert_eq!(cfg.inject.key_delay_ms, 20);
-        assert_eq!(cfg.input.start_combo, "Ctrl+Alt+R");
-        assert_eq!(cfg.input.stop_combo, "Ctrl+Alt+S");
-        assert_eq!(cfg.input.hold_threshold_ms, 300);
-        assert_eq!(cfg.input.device, "name:Keychron");
         assert_eq!(
             cfg.feedback.sound_start,
             "/usr/share/ghostty-voice/start.wav"
@@ -400,20 +324,6 @@ retry_window_seconds = 1200
         assert_eq!(cfg.audio.min_duration_seconds, 0.3);
         assert_eq!(cfg.corrections.get("why do tool").unwrap(), "ydotool");
         assert!(cfg.whisper.vocab.contains(&"ydotool".to_owned()));
-    }
-
-    #[test]
-    fn input_combos_parse_into_key_combos() {
-        // The default combos must be valid KeyCombo strings — a typo'd default
-        // would break the trigger path silently. Assert the real parse succeeds.
-        use crate::key_combo::{KeyCombo, codes};
-        let cfg = Config::default();
-        let start = KeyCombo::parse(&cfg.input.start_combo).unwrap();
-        let stop = KeyCombo::parse(&cfg.input.stop_combo).unwrap();
-        assert_eq!(start.key, codes::KEY_F10);
-        assert_eq!(stop.key, codes::KEY_F9);
-        assert!(start.modifiers.shift && stop.modifiers.shift);
-        assert_eq!(cfg.input.hold_threshold(), Duration::from_millis(250));
     }
 
     #[test]

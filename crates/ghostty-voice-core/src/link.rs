@@ -139,7 +139,7 @@ mod tests {
     #[test]
     fn another_error_reply_is_a_plain_rejection() {
         assert_eq!(
-            classify_first_line("err ydotoold unreachable"),
+            classify_first_line("err whisper-server unreachable"),
             Registration::Rejected,
         );
     }

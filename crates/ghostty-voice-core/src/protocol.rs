@@ -31,12 +31,13 @@ pub enum Command {
     Cancel,
     Status,
     Reload,
-    /// Re-inject the most-recent cached transcript (recovery-only).
+    /// Re-deliver the most-recent cached transcript into the active **wrapper
+    /// sink** (recovery-only); errors when no `talk-to` is registered.
     ReplayLast,
     /// Register the connecting client as a **wrapper sink** (`talk-to`, IDEAS.md
     /// #4). Unlike every other command this does not get a one-shot reply: the
     /// connection stays open and the daemon *pushes* [`Frame`]s down it until the
-    /// client disconnects, at which point the focused-window sink reactivates.
+    /// client disconnects.
     ///
     /// Carries the client's [`PROTOCOL_VERSION`] (`register-sink <version>`) so an
     /// incompatible daemon can be detected. `None` is a legacy bare
@@ -220,46 +221,16 @@ impl Response {
     }
 }
 
-/// Which kind of **Delivery sink** is active, for the `status` report.
-/// Exactly one sink is active at a time (CONTEXT.md): the default
-/// **focused-window sink** or a **wrapper sink** (a running `talk-to`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SinkKind {
-    FocusedWindow,
-    Wrapper,
-}
-
-impl SinkKind {
-    /// The wire token for this sink kind.
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            SinkKind::FocusedWindow => "focused-window",
-            SinkKind::Wrapper => "wrapper",
-        }
-    }
-
-    /// Parse a wire token back into a sink kind (inverse of [`SinkKind::as_str`]).
-    pub fn parse(token: &str) -> Option<SinkKind> {
-        match token {
-            "focused-window" => Some(SinkKind::FocusedWindow),
-            "wrapper" => Some(SinkKind::Wrapper),
-            _ => None,
-        }
-    }
-}
-
-/// The `status` reply: the daemon state plus which **Delivery sink** is active and
-/// how many **wrapper sinks** are registered. Lets a user confirm
-/// routing — wrapper sink vs focused-window sink — without tailing journald.
+/// The `status` reply: the daemon state plus how many **wrapper sinks** are
+/// registered. The only kind of sink is a `talk-to` **wrapper sink**, so the
+/// count is the whole story — `wrappers=0` means there is nowhere to deliver.
 ///
-/// Encoded **additively** on the existing `ok <state>` line so it stays
-/// backward-compatible: `ok <state> sink=<kind> wrappers=<n>`. An older daemon
-/// that answers a bare `ok <state>` still parses (defaulting to the
-/// focused-window sink / 0 wrappers — the pre-wrapper semantics).
+/// Encoded **additively** on the existing `ok <state>` line: `ok <state>
+/// wrappers=<n>`. A bare `ok <state>` (an older daemon) still parses, defaulting
+/// to 0 wrappers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StatusReport {
     pub state: State,
-    pub active_sink: SinkKind,
     pub wrapper_count: usize,
 }
 
@@ -267,45 +238,40 @@ impl StatusReport {
     /// Encode as a single `status` reply line (no trailing newline).
     pub fn encode(&self) -> String {
         format!(
-            "ok {} sink={} wrappers={}",
+            "ok {} wrappers={}",
             self.state.encode_token(),
-            self.active_sink.as_str(),
-            self.wrapper_count,
+            self.wrapper_count
         )
     }
 
     /// Parse a `status` reply line. Requires a leading `ok <state>`; the
-    /// `sink=<kind>` and `wrappers=<n>` tokens are optional (a bare `ok <state>`
-    /// from an older daemon defaults to the focused-window sink / 0 wrappers).
-    /// Returns `None` for an `err` line, an unknown state, or a malformed line.
+    /// `wrappers=<n>` token is optional (a bare `ok <state>` from an older daemon
+    /// defaults to 0 wrappers). Returns `None` for an `err` line, an unknown
+    /// state, or a malformed line.
     pub fn parse(line: &str) -> Option<StatusReport> {
         let mut tokens = line.split_whitespace().peekable();
         if tokens.next()? != "ok" {
             return None;
         }
         // Isolate the state substring: the tokens after `ok` up to the first
-        // `sink=`/`wrappers=` field. The state may be two tokens (`downloading 42`),
-        // so it can't be read as a single token.
+        // `wrappers=` field. The state may be two tokens (`downloading 42`), so it
+        // can't be read as a single token.
         let mut state_tokens: Vec<&str> = Vec::new();
         while let Some(token) = tokens.peek() {
-            if token.starts_with("sink=") || token.starts_with("wrappers=") {
+            if token.starts_with("wrappers=") {
                 break;
             }
             state_tokens.push(tokens.next()?);
         }
         let state = State::parse(&state_tokens.join(" "))?;
-        let mut active_sink = SinkKind::FocusedWindow;
         let mut wrapper_count = 0usize;
         for token in tokens {
-            if let Some(kind) = token.strip_prefix("sink=") {
-                active_sink = SinkKind::parse(kind)?;
-            } else if let Some(count) = token.strip_prefix("wrappers=") {
+            if let Some(count) = token.strip_prefix("wrappers=") {
                 wrapper_count = count.parse().ok()?;
             }
         }
         Some(StatusReport {
             state,
-            active_sink,
             wrapper_count,
         })
     }
@@ -399,8 +365,8 @@ mod tests {
     fn encodes_ok_and_err_responses() {
         assert_eq!(Response::Ok(State::Idle).encode(), "ok idle");
         assert_eq!(
-            Response::Err("ydotoold unreachable".to_owned()).encode(),
-            "err ydotoold unreachable",
+            Response::Err("whisper-server unreachable".to_owned()).encode(),
+            "err whisper-server unreachable",
         );
     }
 
@@ -521,33 +487,21 @@ mod tests {
         assert!(Frame::parse("frobnicate now").is_err());
     }
 
-    // ---- status report: active Delivery sink + wrapper count -----
+    // ---- status report: wrapper count -----
 
     #[test]
-    fn sink_kind_round_trips_through_its_wire_token() {
-        for kind in [SinkKind::FocusedWindow, SinkKind::Wrapper] {
-            assert_eq!(SinkKind::parse(kind.as_str()), Some(kind));
-        }
-        assert_eq!(SinkKind::FocusedWindow.as_str(), "focused-window");
-        assert_eq!(SinkKind::Wrapper.as_str(), "wrapper");
-        assert_eq!(SinkKind::parse("bogus"), None);
-    }
-
-    #[test]
-    fn status_report_encodes_state_active_sink_and_wrapper_count() {
+    fn status_report_encodes_state_and_wrapper_count() {
         let report = StatusReport {
             state: State::Idle,
-            active_sink: SinkKind::FocusedWindow,
             wrapper_count: 0,
         };
-        assert_eq!(report.encode(), "ok idle sink=focused-window wrappers=0");
+        assert_eq!(report.encode(), "ok idle wrappers=0");
 
         let report = StatusReport {
             state: State::Recording,
-            active_sink: SinkKind::Wrapper,
             wrapper_count: 2,
         };
-        assert_eq!(report.encode(), "ok recording sink=wrapper wrappers=2");
+        assert_eq!(report.encode(), "ok recording wrappers=2");
     }
 
     #[test]
@@ -555,12 +509,10 @@ mod tests {
         for report in [
             StatusReport {
                 state: State::Idle,
-                active_sink: SinkKind::FocusedWindow,
                 wrapper_count: 0,
             },
             StatusReport {
                 state: State::Transcribing,
-                active_sink: SinkKind::Wrapper,
                 wrapper_count: 3,
             },
         ] {
@@ -569,41 +521,35 @@ mod tests {
     }
 
     #[test]
-    fn status_report_carries_a_downloading_percent_alongside_the_sink_fields() {
+    fn status_report_carries_a_downloading_percent_alongside_the_wrapper_count() {
         // The two-token `downloading 42` state must round-trip next to the
-        // `sink=`/`wrappers=` fields — the parser isolates the state substring
-        // (tokens after `ok` up to the first `sink=`/`wrappers=`).
+        // `wrappers=` field — the parser isolates the state substring (tokens
+        // after `ok` up to the first `wrappers=`).
         let report = StatusReport {
             state: State::Downloading(Some(42)),
-            active_sink: SinkKind::Wrapper,
             wrapper_count: 1,
         };
-        assert_eq!(report.encode(), "ok downloading 42 sink=wrapper wrappers=1");
+        assert_eq!(report.encode(), "ok downloading 42 wrappers=1");
         assert_eq!(StatusReport::parse(&report.encode()), Some(report));
 
         // The percent-unknown phase is a single state token.
         let report = StatusReport {
             state: State::Downloading(None),
-            active_sink: SinkKind::FocusedWindow,
             wrapper_count: 0,
         };
-        assert_eq!(
-            report.encode(),
-            "ok downloading sink=focused-window wrappers=0"
-        );
+        assert_eq!(report.encode(), "ok downloading wrappers=0");
         assert_eq!(StatusReport::parse(&report.encode()), Some(report));
     }
 
     #[test]
     fn status_report_parse_accepts_a_bare_ok_downloading_percent() {
-        // A pre-sink daemon could answer `ok downloading 42` with no sink suffix;
+        // A pre-wrappers daemon could answer `ok downloading 42` with no suffix;
         // the richer parse still isolates the two-token state and defaults the
-        // sink fields.
+        // wrapper count.
         assert_eq!(
             StatusReport::parse("ok downloading 42"),
             Some(StatusReport {
                 state: State::Downloading(Some(42)),
-                active_sink: SinkKind::FocusedWindow,
                 wrapper_count: 0,
             }),
         );
@@ -611,14 +557,12 @@ mod tests {
 
     #[test]
     fn status_report_parse_is_backward_compatible_with_a_bare_ok_state() {
-        // An older daemon answers `ok idle` with no sink suffix. The richer parse
-        // must still succeed, defaulting to the focused-window sink and 0 wrappers
-        // (the pre-wrapper semantics) rather than failing.
+        // An older daemon answers `ok idle` with no suffix. The richer parse must
+        // still succeed, defaulting to 0 wrappers rather than failing.
         assert_eq!(
             StatusReport::parse("ok idle"),
             Some(StatusReport {
                 state: State::Idle,
-                active_sink: SinkKind::FocusedWindow,
                 wrapper_count: 0,
             }),
         );
