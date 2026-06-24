@@ -3,11 +3,11 @@ id: TASK-16.1
 title: >-
   dev-install: copy-based install path (build → copy binaries to /usr/bin →
   restart); retire symlink/override
-status: In Progress
+status: Done
 assignee:
   - Joel Larson
 created_date: '2026-06-24 02:41'
-updated_date: '2026-06-24 02:45'
+updated_date: '2026-06-24 02:47'
 labels:
   - needs-triage
 dependencies: []
@@ -40,12 +40,12 @@ The config drift-guard (Issue 2) and `--clean` (Issue 3) extend this script; thi
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 packaging/dev-install.sh builds the workspace then copies the 4 binaries over /usr/bin/{ghostty-voice,ghostty-voiced,ghostty-voice-ctl,talk-to} with sudo install -Dm755, and runs `systemctl --user restart ghostty-voiced`
-- [ ] #2 A failed cargo build aborts before anything is copied (no partial install); the script is set -euo pipefail and idempotent
-- [ ] #3 The symlink + ExecStart-override approach is removed: the old dev-setup.sh symlink/override logic is gone and the tool cleans up a previously-written override.conf (+ daemon-reload) so an old-style machine is migrated
-- [ ] #4 make dev runs the copy-based tool; stale Makefile targets (setup/setup-debug/dev-debug for the symlink model) are updated or removed accordingly
-- [ ] #5 RELEASE.md and README Local-development docs describe the copy-based install (to /usr/bin, sudo, no override/symlinks); the -git and release PKGBUILDs are untouched
-- [ ] #6 Committed atomically; bash -n and (if available) shellcheck are clean; the cargo test/clippy/fmt gate stays green
+- [x] #1 packaging/dev-install.sh builds the workspace then copies the 4 binaries over /usr/bin/{ghostty-voice,ghostty-voiced,ghostty-voice-ctl,talk-to} with sudo install -Dm755, and runs `systemctl --user restart ghostty-voiced`
+- [x] #2 A failed cargo build aborts before anything is copied (no partial install); the script is set -euo pipefail and idempotent
+- [x] #3 The symlink + ExecStart-override approach is removed: the old dev-setup.sh symlink/override logic is gone and the tool cleans up a previously-written override.conf (+ daemon-reload) so an old-style machine is migrated
+- [x] #4 make dev runs the copy-based tool; stale Makefile targets (setup/setup-debug/dev-debug for the symlink model) are updated or removed accordingly
+- [x] #5 RELEASE.md and README Local-development docs describe the copy-based install (to /usr/bin, sudo, no override/symlinks); the -git and release PKGBUILDs are untouched
+- [x] #6 Committed atomically; bash -n and (if available) shellcheck are clean; the cargo test/clippy/fmt gate stays green
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -58,3 +58,13 @@ Create packaging/dev-install.sh (replacing dev-setup.sh) with the copy-install s
 4. `systemctl --user restart ghostty-voiced` (packaged unit ExecStart=/usr/bin/ghostty-voiced runs the dev build — no override/symlink).
 Delete packaging/dev-setup.sh. Rewrite Makefile: `make dev` = the tool; drop setup/setup-debug/dev-debug; keep `check`. Update RELEASE.md inner-loop section + add a README Local-development note to the copy model. Leave both PKGBUILDs and the strict-config change untouched. Verify with bash -n, shellcheck, make -n, cargo build; do NOT run the script. Commit atomically.
 <!-- SECTION:PLAN:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Created packaging/dev-install.sh and removed packaging/dev-setup.sh. The new tool: `cargo build --release` → migrate off the old approach (remove the override.conf at $XDG_CONFIG_HOME/systemd/user/ghostty-voiced.service.d/override.conf + `systemctl --user daemon-reload`) → copy the four binaries over /usr/bin/{ghostty-voice,ghostty-voiced,ghostty-voice-ctl,talk-to} via `sudo install -Dm755` → `systemctl --user restart ghostty-voiced`. Build runs first so a failed build aborts before any system mutation (set -euo pipefail; idempotent). The packaged unit's ExecStart=/usr/bin/ghostty-voiced runs the dev build with no override/symlink (decision A).
+
+Makefile rewritten: `make dev` runs the tool; the symlink-model setup/setup-debug/dev-debug targets removed; `check` kept. RELEASE.md inner-loop section and a new README "Local development" note describe the copy model. Both PKGBUILDs and the strict-config change untouched.
+
+Verified: `bash -n` clean; `make -n dev`/`make -n check` correct; `cargo build` green (Rust gate untouched). shellcheck not installed on this machine. Did NOT run the script (it sudo-overwrites /usr/bin and restarts the daemon). Committed atomically as c293160.
+<!-- SECTION:FINAL_SUMMARY:END -->
