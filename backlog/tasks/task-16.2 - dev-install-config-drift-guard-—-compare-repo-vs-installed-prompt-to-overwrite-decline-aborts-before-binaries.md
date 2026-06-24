@@ -3,10 +3,11 @@ id: TASK-16.2
 title: >-
   dev-install: config drift-guard — compare repo vs installed, prompt to
   overwrite, decline aborts before binaries
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - Joel Larson
 created_date: '2026-06-24 02:41'
-updated_date: '2026-06-24 02:42'
+updated_date: '2026-06-24 02:47'
 labels:
   - needs-triage
 dependencies:
@@ -48,3 +49,12 @@ Compare the repo's static package files against what is installed on the machine
 - [ ] #5 No difference (or an absent installed counterpart) installs the missing file and proceeds; the personal ~/.config/ghostty-voice/config.toml is never read or overwritten
 - [ ] #6 Committed atomically; bash -n and (if available) shellcheck clean; documented in the Local-development docs
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+Add a drift_guard() to dev-install.sh, called in main() after build and before migrate/install/restart (so a decline aborts before any binary copy or restart). For each static package pair:
+- config.toml.example ↔ /usr/share/ghostty-voice/config.toml.example
+- dist/ghostty-voiced.service ↔ /usr/lib/systemd/user/ghostty-voiced.service
+Compare exact content with `cmp -s`. Absent installed counterpart → `sudo install -Dm644` it and continue (nothing to clobber). Present + differ → collect. After the loop, if any differ: print the file(s) + `diff`, then if stdin is not a TTY abort (exit 1, nothing installed/restarted); else prompt `overwrite installed configs? [y/N]` — decline aborts, accept overwrites the differing file(s) via `sudo install -Dm644` + `systemctl --user daemon-reload`, then control returns to main which proceeds to the binary copy. The personal ~/.config/ghostty-voice/config.toml is never read or written. Document the guard in RELEASE.md's inner-loop section. Verify bash -n / make -n / cargo build; do not run the script. Commit atomically.
+<!-- SECTION:PLAN:END -->
