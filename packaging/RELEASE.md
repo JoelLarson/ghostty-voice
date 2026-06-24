@@ -42,6 +42,15 @@ you never run the full release pipeline just to test a code change:
    `~/.config/ghostty-voice/config.toml` is never read or touched here — a stale
    one fails loudly at the restart (strict config), which is the point.
 
+   **Wiping XDG state.** `make clean-xdg` (= `dev-install.sh --clean`) removes the
+   ghostty-voice XDG user state — `~/.config/ghostty-voice`,
+   `~/.local/share/ghostty-voice` (incl. the ~3 GB model), `~/.cache/ghostty-voice`,
+   and `~/.local/state/ghostty-voice` (honoring the `XDG_*_HOME` overrides) —
+   behind one confirmation that lists the paths and their sizes. It builds and
+   installs nothing. **Removing the data dir deletes the model, which re-downloads
+   (~3 GB) on the next daemon start.** `dev-install.sh --clean --force` skips the
+   prompt for scripted use.
+
 2. **Packaged integration test (you changed the unit/install hook/deps, or want a
    pacman-tracked install).** `packaging/ghostty-voice-git/` is a VCS PKGBUILD
    that builds the latest *committed* HEAD of the local repo — `pkgver()` from
