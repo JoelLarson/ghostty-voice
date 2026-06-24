@@ -3,10 +3,11 @@ id: TASK-16.3
 title: >-
   dev-install: --clean option to wipe XDG user state (config / share / model /
   cache / state)
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - Joel Larson
 created_date: '2026-06-24 02:41'
-updated_date: '2026-06-24 02:42'
+updated_date: '2026-06-24 02:49'
 labels:
   - needs-triage
 dependencies:
@@ -44,3 +45,16 @@ Part of TASK-16. The opt-in maintenance action that replaces the old manual "del
 - [ ] #4 Docs note that removing the share dir forces a multi-GB model re-download on next daemon start
 - [ ] #5 Committed atomically; bash -n and (if available) shellcheck clean
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+Add `--clean` to dev-install.sh as a standalone maintenance action (no build/install). Refactor main() into arg-parse + dispatch: rename the current install path to install_flow(); main() parses `--clean` and `-y`/`--force`/`--yes`, plus `-h/--help` (usage). No args → install_flow; `--clean` → clean_xdg then exit.
+
+clean_xdg() removes the four XDG dirs honoring overrides:
+- ${XDG_CONFIG_HOME:-$HOME/.config}/ghostty-voice
+- ${XDG_DATA_HOME:-$HOME/.local/share}/ghostty-voice  (incl. the ~3 GB model)
+- ${XDG_CACHE_HOME:-$HOME/.cache}/ghostty-voice
+- ${XDG_STATE_HOME:-$HOME/.local/state}/ghostty-voice
+List only the present dirs with `du -sh` sizes + a model re-download note, require ONE confirmation (`remove all of the above? [y/N]`); decline/no-TTY aborts removing nothing; `--clean -y`/`--force` skips the prompt. Then `rm -rf` each present dir. Add a `make clean-xdg` wrapper. Document `--clean`/`make clean-xdg` + the model re-download in RELEASE.md. Verify bash -n / make -n; do not run. Commit atomically.
+<!-- SECTION:PLAN:END -->
