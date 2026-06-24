@@ -3,10 +3,10 @@ id: TASK-15
 title: >-
   dev workflow: fast local iteration loop, ghostty-voice-git PKGBUILD, and
   upgrade-tolerant config parsing
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-06-24 02:09'
-updated_date: '2026-06-24 02:18'
+updated_date: '2026-06-24 02:21'
 labels:
   - needs-triage
 dependencies: []
@@ -37,12 +37,12 @@ Reduce the friction of testing local changes (today: version bump → commit →
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Config parsing stays strict: malformed TOML OR any unknown key/section (a typo, or a section left over from a previous version) is an error (deny_unknown_fields retained on every section)
-- [ ] #2 A present-but-invalid config is a loud, addressed failure, not silent defaults: the daemon refuses to start (aborts with the error logged) on an invalid config; a *missing* config still uses defaults
-- [ ] #3 `reload` rejects an invalid config — it keeps the running (last-good) config and returns the error to the client, never swapping to defaults or crashing the live daemon
-- [ ] #4 packaging/dev-setup.sh is idempotent: creates ~/.local/bin symlinks to target/release binaries and installs a systemd user ExecStart override for ghostty-voiced; a Makefile target runs the two-command inner loop
-- [ ] #5 A ghostty-voice-git PKGBUILD builds from the local repo with pkgver() from git describe (no manual version bump/tag/checksums); the existing release PKGBUILD is unchanged
-- [ ] #6 README/RELEASE docs note the three layers (cargo inner loop, -git package, release PKGBUILD) and the strict-config behavior; full cargo test, clippy --all-targets, fmt --check stay green
+- [x] #1 Config parsing stays strict: malformed TOML OR any unknown key/section (a typo, or a section left over from a previous version) is an error (deny_unknown_fields retained on every section)
+- [x] #2 A present-but-invalid config is a loud, addressed failure, not silent defaults: the daemon refuses to start (aborts with the error logged) on an invalid config; a *missing* config still uses defaults
+- [x] #3 `reload` rejects an invalid config — it keeps the running (last-good) config and returns the error to the client, never swapping to defaults or crashing the live daemon
+- [x] #4 packaging/dev-setup.sh is idempotent: creates ~/.local/bin symlinks to target/release binaries and installs a systemd user ExecStart override for ghostty-voiced; a Makefile target runs the two-command inner loop
+- [x] #5 A ghostty-voice-git PKGBUILD builds from the local repo with pkgver() from git describe (no manual version bump/tag/checksums); the existing release PKGBUILD is unchanged
+- [x] #6 README/RELEASE docs note the three layers (cargo inner loop, -git package, release PKGBUILD) and the strict-config behavior; full cargo test, clippy --all-targets, fmt --check stay green
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -50,3 +50,25 @@ Reduce the friction of testing local changes (today: version bump → commit →
 <!-- SECTION:NOTES:BEGIN -->
 Design pivot (maintainer decision): config must be CORRECT — fail for any reason, an addressed problem, not papered over. Reverted the warn-and-ignore/serde_ignored approach. Kept deny_unknown_fields (strict). The real bug surfaced: an invalid config was silently replaced with Config::default(). Fix: daemon aborts startup on an invalid (present) config and `reload` rejects it while keeping the running config. The 'delete xdg files on upgrade' step is therefore handled by treating a config-breaking release as an explicit fix-the-config event (loud failure tells you exactly what to remove), not by tolerating stale keys.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Two parts: strict-fail config enforcement, and a layered dev workflow.
+
+STRICT CONFIG (the maintainer's decision — a bad config is a problem to fix, not paper over):
+- Kept `deny_unknown_fields` on every section; `Config::from_toml_str` stays strict (malformed TOML or any unknown key/section is an error). Restored the `rejects_unknown_field`/`rejects_unknown_section` tests (the latter now also asserts a stale `[inject]` section is rejected).
+- Fixed the real bug: the daemon was catching a parse error and silently using `Config::default()`. Now `load_config` returns `Result` — a *missing* config still yields defaults, but a *present-but-invalid* config is an error. Startup aborts with the error logged (`inspect_err` + `?`), so systemd marks the unit failed and journald shows why. `reload` rejects an invalid config (returns the error to the client) and keeps the running last-good config — never swaps to defaults, never crashes the live daemon.
+- Reverted the earlier warn-and-ignore spike (dropped the `serde_ignored` dep).
+
+DEV WORKFLOW (three layers by change cadence):
+- `packaging/dev-setup.sh` (idempotent): symlinks `~/.local/bin/*` → `target/<profile>/*` and writes a systemd user `ExecStart` override (`%h/.local/bin/ghostty-voiced`), so dev builds never touch pacman-owned `/usr/bin`. Prints an undo line; warns if `~/.local/bin` isn't on PATH.
+- `Makefile`: `setup`/`setup-debug`, `dev`/`dev-debug` (cargo build + `systemctl --user restart`), `check` (test/clippy/fmt). Inner loop is one command, no version bump/commit/sudo.
+- `packaging/ghostty-voice-git/PKGBUILD`: VCS package building the local repo's committed HEAD via `git+file://`, `pkgver()` from `git describe` (verified → `0.1.9.r32.gaeb7772`), `provides/conflicts ghostty-voice`, whisper.cpp clone cached, completeness guard mirrored. Install hook symlinked to avoid drift. Doubles as the future AUR `-git` companion (swap `source` to the GitHub remote). The release PKGBUILD is untouched.
+
+DOCS: RELEASE.md gains a "Local development" section (the three layers + the strict-config note); README's config section documents the strict failure mode.
+
+VERIFY: full `cargo test` green (251), `clippy --all-targets` clean, `fmt --check` clean; `dev-setup.sh` and the PKGBUILD pass `bash -n`; Makefile uses real tabs. NOT verified: a full `makepkg` of the `-git` package end-to-end (clones + builds vendored whisper.cpp — minutes + Vulkan build deps); it is structurally complete and syntax-checked.
+
+FOLLOW-UP (noted, out of scope): split the vendored whisper.cpp Vulkan build into its own package so neither dev nor release rebuilds it.
+<!-- SECTION:FINAL_SUMMARY:END -->
