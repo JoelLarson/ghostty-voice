@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-06-24 00:45'
+updated_date: '2026-06-24 00:52'
 labels:
   - needs-triage
 dependencies: []
@@ -61,3 +62,15 @@ An ADR records the architecture decision (talk-to is the sole interface; no glob
 
 Refs: CONTEXT.md, IDEAS.md (#4 talk-to), TASK-8 (the evdev path being reversed), docs/adr/.
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+Two slices, both implemented this session, each its own atomic change-set; docs land with the slice that changes that part of the model.
+
+Sequencing:
+1. TASK-14.1 (delivery) first — collapse sinks to wrapper-only, delete ydotool + freshness window. Simpler delivery model that 14.2 builds on. Includes the ADR + CONTEXT.md sink/freshness/held/auto-type rewrite.
+2. TASK-14.2 (input) — talk-to intercepts Shift+F9/F10 escape sequences → socket commands (toggle / vad); delete the daemon's global evdev listener + dead tactile modules (core input/gesture/key_combo, io/input), the [input] config, ctl bind flow, doctor trigger/uinput/input-group checks. CONTEXT.md trigger rewrite + README.
+
+Both verified with full `cargo test` / `clippy --all-targets` / `fmt --check`. Commit left to the user.
+<!-- SECTION:PLAN:END -->
