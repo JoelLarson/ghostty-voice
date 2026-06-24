@@ -125,7 +125,9 @@ async fn main() -> Result<()> {
         .init();
 
     let cfg_path = config_path()?;
-    let config = load_config(&cfg_path);
+    // A broken config aborts startup with a clear error rather than running on
+    // silent defaults — systemd marks the unit failed and the reason is logged.
+    let config = load_config(&cfg_path).inspect_err(|e| error!("{e:#}"))?;
 
     let socket = socket_path()?;
     let _ = std::fs::remove_file(&socket);
@@ -664,7 +666,11 @@ async fn perform(d: &mut Daemon, daemon: &Arc<Mutex<Daemon>>, action: Action) ->
             Ok(())
         }
         Action::ReloadConfig => {
-            d.config = load_config(&d.config_path);
+            // Reject a broken config: keep the running (last-good) config and
+            // return the error to the client, never swap to silent defaults or
+            // crash the live daemon.
+            let new = load_config(&d.config_path)?;
+            d.config = new;
             Ok(())
         }
         Action::ReplayLast => replay_last(d).await,
@@ -1253,16 +1259,19 @@ fn config_path() -> Result<PathBuf> {
     ghostty_voice_core::config::config_path().context("HOME is not set")
 }
 
-fn load_config(path: &std::path::Path) -> Config {
+/// Load config **strictly**. A *missing* file yields defaults (a fresh install
+/// before the example is copied). A file that *exists but is invalid* — broken
+/// TOML or an unknown key (a typo, or a section left over from a previous
+/// version) — is an **error**: the daemon refuses to run on a misconfigured
+/// config rather than silently falling back to all-defaults. A bad config is a
+/// problem to fix, surfaced loudly: at startup it aborts the daemon; on `reload`
+/// it is rejected and the running config is kept (see `Action::ReloadConfig`).
+fn load_config(path: &Path) -> Result<Config> {
     match std::fs::read_to_string(path) {
-        Ok(s) => match Config::from_toml_str(&s) {
-            Ok(c) => c,
-            Err(e) => {
-                error!("invalid config {}: {e:?} — using defaults", path.display());
-                Config::default()
-            }
-        },
-        Err(_) => Config::default(),
+        Ok(s) => Config::from_toml_str(&s)
+            .map_err(|e| anyhow::anyhow!("invalid config {}: {e:?}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
+        Err(e) => Err(anyhow::Error::new(e).context(format!("reading config {}", path.display()))),
     }
 }
 

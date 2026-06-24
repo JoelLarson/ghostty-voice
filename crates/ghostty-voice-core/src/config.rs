@@ -165,6 +165,12 @@ pub enum ConfigError {
 impl Config {
     /// Parse a `config.toml` string into a [`Config`], filling any missing
     /// section or field from its default.
+    ///
+    /// **Strict**: a syntactically broken file *or* an unknown key (a typo, or a
+    /// section/field left over from a previous version) is an error, never
+    /// silently ignored. The caller is expected to surface that error and refuse
+    /// to run on a misconfigured config rather than fall back to defaults — a bad
+    /// config is a problem to fix, not to paper over.
     pub fn from_toml_str(s: &str) -> Result<Config, ConfigError> {
         toml::from_str(s).map_err(|e| ConfigError::Parse(e.to_string()))
     }
@@ -339,7 +345,10 @@ retry_window_seconds = 1200
 
     #[test]
     fn rejects_unknown_section() {
+        // A removed/renamed section left in a config after an upgrade (e.g. an old
+        // [inject]/[input]) is an error to fix, not silently tolerated.
         assert!(Config::from_toml_str("[wibble]\nx = 1\n").is_err());
+        assert!(Config::from_toml_str("[inject]\nkey_delay_ms = 12\n").is_err());
     }
 
     #[test]

@@ -78,7 +78,11 @@ makepkg -si                    # builds the Rust workspace + a vendored whisper.
 ## Configuration keys
 
 All keys live in `~/.config/ghostty-voice/config.toml` (see `config.toml.example`). `reload`
-hot-applies non-model fields (`ghostty-voice-ctl reload`). The slice each key belongs to:
+hot-applies non-model fields (`ghostty-voice-ctl reload`). Config parsing is **strict**: an
+existing config that is malformed or carries an unknown key (a typo, or a section removed in a
+newer version) makes the daemon **refuse to start** — and `reload` reject the change, keeping the
+running config — rather than silently using defaults. A *missing* config is fine (defaults apply).
+The slice each key belongs to:
 
 - `[whisper]` — `model_path`, `model_url`, `model_sha256` (first-run download, S7),
   `vulkan_device` (GPU pin, S2/ADR-0001), `beam_size`, `temperature`, `prompt_prefix`, `vocab`
