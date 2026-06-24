@@ -3,9 +3,10 @@ id: TASK-15
 title: >-
   dev workflow: fast local iteration loop, ghostty-voice-git PKGBUILD, and
   upgrade-tolerant config parsing
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-06-24 02:09'
+updated_date: '2026-06-24 02:09'
 labels:
   - needs-triage
 dependencies: []
