@@ -3,9 +3,10 @@ id: TASK-14.1
 title: >-
   remove the focused-window/ydotool sink — the wrapper sink is the only Delivery
   sink
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-06-24 00:45'
+updated_date: '2026-06-24 00:46'
 labels:
   - needs-triage
 dependencies: []
