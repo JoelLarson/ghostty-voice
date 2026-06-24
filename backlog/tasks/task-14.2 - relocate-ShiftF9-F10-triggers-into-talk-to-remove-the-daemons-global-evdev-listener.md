@@ -3,10 +3,10 @@ id: TASK-14.2
 title: >-
   relocate Shift+F9/F10 triggers into talk-to; remove the daemon's global evdev
   listener
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-06-24 00:46'
-updated_date: '2026-06-24 01:08'
+updated_date: '2026-06-24 01:17'
 labels:
   - needs-triage
 dependencies: []
@@ -46,11 +46,51 @@ Part of TASK-14 (talk-to as the sole interface). Moves triggering out of the dae
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 talk-to intercepts Shift+F10 (toggle) and Shift+F9 (vad) escape sequences in its proxy loop and sends the command to the daemon over the control socket, instead of forwarding the bytes to the child
-- [ ] #2 The escape-sequence → command mapping is a pure function in ghostty-voice-core, unit-tested by feeding byte sequences; unrelated bytes (including bare F9/F10 and the F12 debug key) pass through untouched
-- [ ] #3 The daemon's global evdev listener is deleted (spawn_input_listener/input_reader_loop/handle_button + reader thread); the daemon opens no /dev/input device
-- [ ] #4 The dead tactile modules are deleted: io/input.rs and core input.rs/gesture.rs/key_combo.rs; the [input] config section, ghostty-voice-ctl bind flow, and doctor trigger-device check are removed
-- [ ] #5 Cancel remains available via ghostty-voice-ctl cancel; README documents triggering from inside talk-to and that triggers do not fire when focused elsewhere
-- [ ] #6 CONTEXT.md updated: triggers are in-terminal (talk-to), press-only, no tap/hold/PTT; no system-wide input capture
-- [ ] #7 New pure trigger-parser tests and updated talk-to/daemon tests pass; full cargo test, clippy --all-targets, fmt --check are green
+- [x] #1 talk-to intercepts Shift+F10 (toggle) and Shift+F9 (vad) escape sequences in its proxy loop and sends the command to the daemon over the control socket, instead of forwarding the bytes to the child
+- [x] #2 The escape-sequence → command mapping is a pure function in ghostty-voice-core, unit-tested by feeding byte sequences; unrelated bytes (including bare F9/F10 and the F12 debug key) pass through untouched
+- [x] #3 The daemon's global evdev listener is deleted (spawn_input_listener/input_reader_loop/handle_button + reader thread); the daemon opens no /dev/input device
+- [x] #4 The dead tactile modules are deleted: io/input.rs and core input.rs/gesture.rs/key_combo.rs; the [input] config section, ghostty-voice-ctl bind flow, and doctor trigger-device check are removed
+- [x] #5 Cancel remains available via ghostty-voice-ctl cancel; README documents triggering from inside talk-to and that triggers do not fire when focused elsewhere
+- [x] #6 CONTEXT.md updated: triggers are in-terminal (talk-to), press-only, no tap/hold/PTT; no system-wide input capture
+- [x] #7 New pure trigger-parser tests and updated talk-to/daemon tests pass; full cargo test, clippy --all-targets, fmt --check are green
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+CORE: new pure `trigger.rs` — `scan(&[u8]) -> Vec<Segment>` splitting input into `Forward(bytes)` / `Trigger(Toggle|Vad)`; recognizes Shift+F10 (`\x1b[21;2~`)→toggle, Shift+F9 (`\x1b[20;2~`)→vad; everything else (incl. bare F9/F10, F12) forwards. Registered in lib.rs. Deleted `input.rs`/`gesture.rs`/`key_combo.rs`. `config.rs`: removed `InputConfig`/`[input]` + tests + the now-unused `Duration` import. `doctor.rs`: repurposed to a single daemon-reachability check (all prior checks were evdev/uinput/ydotool).
+
+IO: deleted `input.rs` + lib decl.
+
+TALK-TO: proxy loop runs `trigger::scan` on stdin; `Trigger` → `send_command(word)` (detached one-shot socket connection, best-effort, logged), `Forward` → child PTY (F12 debug aid preserved). Added `send_command`.
+
+DAEMON: removed `spawn_input_listener`/`input_reader_loop`/`handle_button`, the evdev reader thread, `input_shutdown`, and the `ButtonEvent`/`ControlFlow`/`AtomicBool`/`Ordering` imports. Opens no `/dev/input`.
+
+CTL: `doctor()` now probes the daemon socket; removed `in_group`/`load_config`/`config_path` helpers and the `[input]`/evdev doc.
+
+PACKAGING/DOCS: `config.toml.example` drops `[input]` (replaced by a trigger note); `.install` hook + `ghostty-voiced.service` drop ydotool/evdev/uinput/input-group; README fully rewritten (talk-to is the interface; Shift+F10 toggle / Shift+F9 VAD press-only; `wrappers=N` status); CONTEXT.md intro covers in-terminal triggers.
+
+VERIFY: full `cargo test` + `clippy --all-targets` + `fmt --check` + release build green.
+<!-- SECTION:PLAN:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Moved triggering into `talk-to` and deleted the daemon's system-wide evdev listener, so Shift+F9/F10 fire only inside the talk-to window.
+
+CORE: new pure `trigger.rs` — `scan()` splits a stdin buffer into `Forward(bytes)`/`Trigger(Toggle|Vad)` segments, recognizing Shift+F10 (`ESC[21;2~`)→toggle and Shift+F9 (`ESC[20;2~`)→vad and forwarding everything else (10 tests cover bare F9/F10, the F12 debug key, a lone ESC, embedded/back-to-back triggers, empty buffer). Deleted the tactile modules `input.rs`/`gesture.rs`/`key_combo.rs`; removed `InputConfig`/`[input]` from `config.rs` (+ the unused `Duration` import).
+
+TALK-TO: the proxy loop runs `trigger::scan` on every stdin read — a recognized trigger is consumed and sent to the daemon via a new `send_command` (a detached one-shot control-socket connection reusing the daemon's existing command path; best-effort, failures logged to the talk-to log), everything else forwards to the child PTY (the F12 debug aid is preserved).
+
+DAEMON: deleted `spawn_input_listener`/`input_reader_loop`/`handle_button`, the evdev reader thread and `input_shutdown`, and the now-unused `ButtonEvent`/`ControlFlow`/`AtomicBool`/`Ordering` imports — the daemon opens no `/dev/input` device.
+
+CTL: `doctor` repurposed to a daemon-reachability check (every prior check — ydotoold socket, input group, /dev/uinput, trigger device — became obsolete); removed the `in_group`/`load_config`/`config_path` helpers.
+
+IO: deleted `input.rs` + its lib declaration.
+
+DOCS/PACKAGING: `config.toml.example` drops `[input]` for a trigger note; the `.install` hook and `ghostty-voiced.service` drop ydotool/evdev/uinput/input-group; the README is fully rewritten (talk-to is the sole interface; Shift+F10 toggle / Shift+F9 VAD, press-only; `wrappers=N` status; delivery-sink section reflects wrapper-only); CONTEXT.md intro covers in-terminal triggers.
+
+VERIFY: full `cargo test` green (251 tests across all suites), `cargo clippy --all-targets` clean, `cargo fmt --check` clean, release build OK. Not committed (left to the user).
+
+SCOPE NOTE: `doctor` was kept (repurposed to a daemon-reachability check) rather than deleted, since all its checks were obsolete and removing a documented command/affordance is more disruptive than retargeting it. Easy to drop entirely as a follow-up if preferred. Tap/hold/PTT semantics are intentionally not reproduced inside the terminal (no key-release events) — recovering them via the Kitty keyboard protocol is out of scope (ADR-0003).
+<!-- SECTION:FINAL_SUMMARY:END -->
