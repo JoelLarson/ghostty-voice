@@ -39,6 +39,13 @@ For a packaged install on Arch:
 makepkg -si                    # builds the Rust workspace + a vendored whisper.cpp Vulkan build
 ```
 
+**Local development.** With a packaged install present, `make dev` (wraps
+`packaging/dev-install.sh`) is the inner loop: it builds the workspace, copies the
+four binaries over `/usr/bin` (`sudo`, like `makepkg -si`), and restarts the
+daemon — which runs the dev build because the packaged unit's `ExecStart` is
+`/usr/bin/ghostty-voiced` (no symlink, no systemd override). See
+`packaging/RELEASE.md` for the full layered dev workflow.
+
 ## First-run setup
 
 1. **GPU pin** — `ghostty-voice` pins whisper to your discrete GPU by **PCI address**

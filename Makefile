@@ -1,23 +1,11 @@
-# Developer convenience targets. See packaging/dev-setup.sh and packaging/RELEASE.md.
-.PHONY: setup setup-debug dev dev-debug check
+# Developer convenience targets. See packaging/dev-install.sh and packaging/RELEASE.md.
+.PHONY: dev check
 
-# One-time: symlink ~/.local/bin -> target/ and install the systemd user override.
-setup:
-	bash packaging/dev-setup.sh release
-
-setup-debug:
-	bash packaging/dev-setup.sh debug
-
-# Inner loop: rebuild and restart the daemon. The symlinks make the swap a no-op.
+# Inner loop: build the workspace, copy the dev binaries over /usr/bin (sudo),
+# and restart the daemon. The packaged unit runs /usr/bin/ghostty-voiced, so the
+# restart picks up the dev build — no symlink, no systemd override.
 dev:
-	cargo build --release
-	systemctl --user restart ghostty-voiced
-
-# Faster compiles (the heavy compute is in whisper-server, a separate process).
-# Use after `make setup-debug`.
-dev-debug:
-	cargo build
-	systemctl --user restart ghostty-voiced
+	bash packaging/dev-install.sh
 
 # The full gate (matches CI-equivalent).
 check:

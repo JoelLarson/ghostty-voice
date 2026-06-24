@@ -14,17 +14,20 @@ All commands run from `packaging/` unless noted.
 Three layers, matched to how often the thing they rebuild actually changes — so
 you never run the full release pipeline just to test a code change:
 
-1. **Inner loop (Rust changes — the common case).** One-time, run `make setup`
-   (wraps `packaging/dev-setup.sh`): it symlinks `~/.local/bin/*` to
-   `target/release/*` and installs a systemd user `ExecStart` override so the
-   daemon runs your dev build. After that the loop is just:
+1. **Inner loop (Rust changes — the common case).** `make dev` (wraps
+   `packaging/dev-install.sh`): it `cargo build --release`s the workspace, copies
+   the four freshly-built binaries over the pacman-owned ones in `/usr/bin`
+   (`sudo install -Dm755`, the same paths `makepkg -si` writes), then
+   `systemctl --user restart ghostty-voiced`:
    ```sh
-   make dev          # cargo build --release && systemctl --user restart ghostty-voiced
+   make dev
    ```
-   No version bump, no commit, no `sudo`, no `/usr/bin` collision with a packaged
-   install. `make setup-debug` + `make dev-debug` trade release optimization for
-   faster compiles (fine — the heavy compute lives in `whisper-server`). Undo:
-   the command printed at the end of `dev-setup.sh`.
+   The packaged unit's `ExecStart` is `/usr/bin/ghostty-voiced`, so the restart
+   runs your dev build — no `~/.local/bin` symlink and no systemd override. A
+   failed build installs nothing (all-or-nothing). This is a lightweight reinstall
+   of just the binaries, so a packaged install must already be present (layer
+   2/3) for the systemd unit to exist; re-running with no source change reinstalls
+   identical bytes (idempotent).
 
 2. **Packaged integration test (you changed the unit/install hook/deps, or want a
    pacman-tracked install).** `packaging/ghostty-voice-git/` is a VCS PKGBUILD
