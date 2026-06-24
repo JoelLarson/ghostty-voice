@@ -3,9 +3,10 @@ id: TASK-14.2
 title: >-
   relocate Shift+F9/F10 triggers into talk-to; remove the daemon's global evdev
   listener
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-06-24 00:46'
+updated_date: '2026-06-24 01:08'
 labels:
   - needs-triage
 dependencies: []
