@@ -3,10 +3,10 @@ id: TASK-14
 title: >-
   PRD: talk-to as the sole interface — remove global hotkeys & the
   focused-window sink
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-06-24 00:45'
-updated_date: '2026-06-24 00:52'
+updated_date: '2026-06-24 01:17'
 labels:
   - needs-triage
 dependencies: []
@@ -74,3 +74,21 @@ Sequencing:
 
 Both verified with full `cargo test` / `clippy --all-targets` / `fmt --check`. Commit left to the user.
 <!-- SECTION:PLAN:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Made `talk-to` the sole interface and removed both "global" desktop-integration paths, in two slices.
+
+TASK-14.1 (delivery): collapsed the sink model to wrapper-only — deleted the focused-window/ydotool sink, the Freshness window, and ydotool injection; `replay-last` now re-delivers to the active wrapper; `status` reports `wrappers=N`.
+
+TASK-14.2 (input): moved triggering into `talk-to` — a new pure `trigger` module recognizes Shift+F10 (toggle) / Shift+F9 (vad) escape sequences in the proxy loop and sends them over the control socket; deleted the daemon's global evdev listener and the dead tactile modules (`input`/`gesture`/`key_combo`, io `input`), the `[input]` config, and (repurposed) `doctor`.
+
+Net result: triggers fire only inside a `talk-to` window, transcripts are delivered only into a wrapped agent's PTY, and the daemon opens no input device and runs no `ydotool`. Runtime deps drop `ydotool`/`ydotoold`.
+
+Docs: CONTEXT.md domain model updated (sinks/freshness/held/replay + in-terminal triggers), `docs/adr/0003` records the architecture shift, README/`.install`/service/config-example/PKGBUILD all updated.
+
+VERIFY: full `cargo test` green (251 tests), `clippy --all-targets` clean, `fmt --check` clean, release build OK. Not committed — left to the user (suggest one commit per slice on a branch).
+
+Out of scope / follow-ups: recovering tap/hold/PTT inside the terminal (would need the Kitty keyboard protocol's key-release reports); optionally deleting `doctor` entirely.
+<!-- SECTION:FINAL_SUMMARY:END -->
