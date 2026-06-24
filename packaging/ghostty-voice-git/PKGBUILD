@@ -1,0 +1,89 @@
+# Maintainer: Joel Larson
+#
+# Development / VCS package: builds the latest *committed* HEAD of the local repo
+# (no version bump, no tag, no checksums, no GitHub round-trip). Use this for a
+# pacman-tracked integration install while iterating; for the tight inner loop
+# (uncommitted changes) use the symlink loop from packaging/dev-setup.sh instead.
+#
+#   makepkg -fi          # from this directory
+#   # or: paru -Bi packaging/ghostty-voice-git
+#
+# To publish this as the AUR `-git` companion later, change `source` to the
+# GitHub remote: source=("$pkgname::git+https://github.com/JoelLarson/ghostty-voice.git")
+pkgname=ghostty-voice-git
+pkgver=0
+pkgrel=1
+pkgdesc="Voice dictation into a talk-to-wrapped terminal agent (Wayland, DE-agnostic), local Whisper over Vulkan — VCS build"
+arch=('x86_64')
+url="https://github.com/JoelLarson/ghostty-voice"
+license=('custom:unlicensed')
+depends=('pipewire' 'sox' 'wl-clipboard' 'libnotify' 'vulkan-icd-loader' 'openssl')
+makedepends=('cargo' 'cmake' 'git' 'vulkan-headers' 'spirv-headers' 'spirv-tools' 'glslang' 'shaderc')
+optdepends=('vulkan-tools: vulkaninfo, to confirm RADV sees your GPU'
+            'sound-theme-freedesktop: theme sounds for the default audio cues')
+provides=('ghostty-voice')
+conflicts=('ghostty-voice')
+install="ghostty-voice.install"
+# Build the local working repo's committed HEAD (two levels up from this PKGBUILD).
+# VCS sources carry no checksum.
+source=("$pkgname::git+file://$startdir/../..")
+sha256sums=('SKIP')
+
+# The vendored whisper.cpp Vulkan build (large; pinned tag for reproducibility).
+_whisper_url="https://github.com/ggerganov/whisper.cpp"
+_whisper_tag="v1.7.4"
+
+pkgver() {
+  cd "$srcdir/$pkgname"
+  # e.g. v0.1.9-32-gaeb7772 -> 0.1.9.r32.gaeb7772; falls back to rN.<short> when untagged.
+  git describe --long --tags --abbrev=7 2>/dev/null \
+    | sed 's/^v//;s/\([^-]*-g\)/r\1/;s/-/./g' \
+    || printf "r%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short=7 HEAD)"
+}
+
+build() {
+  cd "$srcdir/$pkgname"
+
+  # 1. Rust workspace (the daemon, ctl client, talk-to wrapper, + the S1 skeleton).
+  cargo build --release --locked
+
+  # 2. Vendored whisper.cpp built with Vulkan (-DGGML_VULKAN=1). Cached across
+  #    rebuilds: the clone/build is skipped if a prior build is already present.
+  if [ ! -d whisper.cpp ]; then
+    git clone --depth=1 --branch "$_whisper_tag" "$_whisper_url" whisper.cpp
+  fi
+  cmake -S whisper.cpp -B whisper.cpp/build \
+    -DGGML_VULKAN=1 -DCMAKE_BUILD_TYPE=Release -DWHISPER_BUILD_TESTS=OFF
+  cmake --build whisper.cpp/build -j --target whisper-server
+}
+
+package() {
+  cd "$srcdir/$pkgname"
+
+  install -Dm755 target/release/ghostty-voice      "$pkgdir/usr/bin/ghostty-voice"
+  install -Dm755 target/release/ghostty-voiced     "$pkgdir/usr/bin/ghostty-voiced"
+  install -Dm755 target/release/ghostty-voice-ctl  "$pkgdir/usr/bin/ghostty-voice-ctl"
+  install -Dm755 target/release/talk-to            "$pkgdir/usr/bin/talk-to"
+  install -Dm755 whisper.cpp/build/bin/whisper-server "$pkgdir/usr/bin/whisper-server"
+
+  install -dm755 "$pkgdir/usr/lib"
+  find whisper.cpp/build \( -name 'libwhisper.so*' -o -name 'libggml*.so*' \) \
+    -exec cp -Pv -t "$pkgdir/usr/lib/" {} +
+
+  install -Dm644 dist/ghostty-voiced.service \
+    "$pkgdir/usr/lib/systemd/user/ghostty-voiced.service"
+  install -Dm644 config.toml.example \
+    "$pkgdir/usr/share/ghostty-voice/config.toml.example"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/ghostty-voice/README.md"
+
+  # Binary-completeness guard (mirrors the release PKGBUILD): all four binaries
+  # must install, or the build fails loudly.
+  local _bin _missing=()
+  for _bin in ghostty-voice ghostty-voiced ghostty-voice-ctl talk-to; do
+    [ -x "$pkgdir/usr/bin/$_bin" ] || _missing+=("$_bin")
+  done
+  if (( ${#_missing[@]} )); then
+    error "package() is missing required binaries: ${_missing[*]}"
+    return 1
+  fi
+}

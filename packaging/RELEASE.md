@@ -9,6 +9,42 @@ with a real hash.
 
 All commands run from `packaging/` unless noted.
 
+## Local development (not a release)
+
+Three layers, matched to how often the thing they rebuild actually changes — so
+you never run the full release pipeline just to test a code change:
+
+1. **Inner loop (Rust changes — the common case).** One-time, run `make setup`
+   (wraps `packaging/dev-setup.sh`): it symlinks `~/.local/bin/*` to
+   `target/release/*` and installs a systemd user `ExecStart` override so the
+   daemon runs your dev build. After that the loop is just:
+   ```sh
+   make dev          # cargo build --release && systemctl --user restart ghostty-voiced
+   ```
+   No version bump, no commit, no `sudo`, no `/usr/bin` collision with a packaged
+   install. `make setup-debug` + `make dev-debug` trade release optimization for
+   faster compiles (fine — the heavy compute lives in `whisper-server`). Undo:
+   the command printed at the end of `dev-setup.sh`.
+
+2. **Packaged integration test (you changed the unit/install hook/deps, or want a
+   pacman-tracked install).** `packaging/ghostty-voice-git/` is a VCS PKGBUILD
+   that builds the latest *committed* HEAD of the local repo — `pkgver()` from
+   `git describe`, so **no version bump, tag, or checksums**:
+   ```sh
+   makepkg -fi    # from packaging/ghostty-voice-git/   (or: paru -Bi packaging/ghostty-voice-git)
+   ```
+   This is also the future AUR `-git` companion (swap its `source` to the GitHub
+   remote to publish).
+
+3. **Release → AUR (rare).** The steps below, using the pinned-tarball PKGBUILD.
+
+**Config is strict.** A `~/.config/ghostty-voice/config.toml` that exists but is
+invalid — broken TOML *or* an unknown key (a typo, or a section left over from a
+previous version) — makes the daemon **refuse to start** (and `reload` reject the
+change, keeping the running config), rather than silently falling back to
+defaults. So when a release removes a config field, that is a deliberate, loud
+fix-the-config event for users — note it in the changelog.
+
 ## One-time setup
 
 - Clone the AUR package repo somewhere alongside this one:
