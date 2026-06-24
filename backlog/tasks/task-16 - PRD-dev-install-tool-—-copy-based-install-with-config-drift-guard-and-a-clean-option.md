@@ -3,10 +3,10 @@ id: TASK-16
 title: >-
   PRD: dev-install tool — copy-based install with config drift-guard and a
   --clean option
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-06-24 02:41'
-updated_date: '2026-06-24 02:42'
+updated_date: '2026-06-24 02:51'
 labels:
   - needs-triage
 dependencies: []
@@ -95,3 +95,15 @@ Done when: dev-install.sh implements copy-install + drift-guard + --clean per th
 
 === END GOAL PROMPT ===
 <!-- SECTION:PLAN:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implemented the dev-install tool across three atomic commits on main (one per subtask):
+
+- TASK-16.1 (c293160) — packaging/dev-install.sh replaces dev-setup.sh: cargo build --release → migrate off the old symlink/override (remove override.conf + daemon-reload) → copy the four binaries over /usr/bin via `sudo install -Dm755` → restart the daemon (packaged unit ExecStart=/usr/bin/ghostty-voiced runs the dev build, no override — decision A). Makefile `make dev` rewired; symlink-model targets dropped; RELEASE.md + README docs updated.
+- TASK-16.2 (7ad42db) — drift-guard runs after build, before any binary copy: exact `cmp -s` of config.toml.example ↔ /usr/share/ghostty-voice/config.toml.example and dist/ghostty-voiced.service ↔ /usr/lib/systemd/user/ghostty-voiced.service (decision B). Difference → diff + `overwrite installed configs? [y/N]`; decline/no-TTY aborts before binaries/restart; accept → sudo-overwrite + daemon-reload then proceed; absent counterpart installed. Personal ~/.config config never touched.
+- TASK-16.3 (2b3f191) — standalone `--clean` (+ `make clean-xdg`) wipes the four XDG dirs (honoring XDG_*_HOME) behind one confirmation listing paths + du sizes; --force/-y skips; no build/install; docs note the ~3 GB model re-download.
+
+Verified: bash -n clean; make -n dev/clean-xdg/check correct; --help renders; cargo build green (Rust gate untouched); both PKGBUILDs and the strict-config change untouched. The script was NOT run on this machine (it sudo-overwrites /usr/bin and restarts the daemon) — verified by reading + bash -n + make -n. shellcheck is not installed on this machine.
+<!-- SECTION:FINAL_SUMMARY:END -->
