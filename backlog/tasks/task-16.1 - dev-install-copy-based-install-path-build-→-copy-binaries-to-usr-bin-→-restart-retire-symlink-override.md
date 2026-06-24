@@ -3,9 +3,11 @@ id: TASK-16.1
 title: >-
   dev-install: copy-based install path (build → copy binaries to /usr/bin →
   restart); retire symlink/override
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - Joel Larson
 created_date: '2026-06-24 02:41'
+updated_date: '2026-06-24 02:45'
 labels:
   - needs-triage
 dependencies: []
@@ -45,3 +47,14 @@ The config drift-guard (Issue 2) and `--clean` (Issue 3) extend this script; thi
 - [ ] #5 RELEASE.md and README Local-development docs describe the copy-based install (to /usr/bin, sudo, no override/symlinks); the -git and release PKGBUILDs are untouched
 - [ ] #6 Committed atomically; bash -n and (if available) shellcheck are clean; the cargo test/clippy/fmt gate stays green
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+Create packaging/dev-install.sh (replacing dev-setup.sh) with the copy-install spine:
+1. `cargo build --release` (a failed build aborts before any system mutation — set -euo pipefail).
+2. Migrate an old-style machine: if the override.conf this repo wrote exists at $XDG_CONFIG_HOME/systemd/user/ghostty-voiced.service.d/override.conf, remove it (+ rmdir empty dir) and `systemctl --user daemon-reload`.
+3. Copy the four built binaries over /usr/bin/{ghostty-voice,ghostty-voiced,ghostty-voice-ctl,talk-to} via `sudo install -Dm755`.
+4. `systemctl --user restart ghostty-voiced` (packaged unit ExecStart=/usr/bin/ghostty-voiced runs the dev build — no override/symlink).
+Delete packaging/dev-setup.sh. Rewrite Makefile: `make dev` = the tool; drop setup/setup-debug/dev-debug; keep `check`. Update RELEASE.md inner-loop section + add a README Local-development note to the copy model. Leave both PKGBUILDs and the strict-config change untouched. Verify with bash -n, shellcheck, make -n, cargo build; do NOT run the script. Commit atomically.
+<!-- SECTION:PLAN:END -->
