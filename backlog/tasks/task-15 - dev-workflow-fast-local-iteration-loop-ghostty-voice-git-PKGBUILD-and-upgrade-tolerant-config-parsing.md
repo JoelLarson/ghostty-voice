@@ -6,7 +6,7 @@ title: >-
 status: Done
 assignee: []
 created_date: '2026-06-24 02:09'
-updated_date: '2026-06-24 02:21'
+updated_date: '2026-06-24 02:42'
 labels:
   - needs-triage
 dependencies: []
@@ -49,6 +49,8 @@ Reduce the friction of testing local changes (today: version bump → commit →
 
 <!-- SECTION:NOTES:BEGIN -->
 Design pivot (maintainer decision): config must be CORRECT — fail for any reason, an addressed problem, not papered over. Reverted the warn-and-ignore/serde_ignored approach. Kept deny_unknown_fields (strict). The real bug surfaced: an invalid config was silently replaced with Config::default(). Fix: daemon aborts startup on an invalid (present) config and `reload` rejects it while keeping the running config. The 'delete xdg files on upgrade' step is therefore handled by treating a config-breaking release as an explicit fix-the-config event (loud failure tells you exactly what to remove), not by tolerating stale keys.
+
+Dev-tooling SUPERSEDED by TASK-16: the symlink ~/.local/bin + systemd ExecStart override approach is replaced by a copy-based dev-install.sh (copy binaries to /usr/bin, no override; config drift-guard; --clean). The strict-config change and the ghostty-voice-git PKGBUILD from this task remain in force.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
