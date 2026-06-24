@@ -6,7 +6,7 @@ title: >-
 status: In Progress
 assignee: []
 created_date: '2026-06-24 02:09'
-updated_date: '2026-06-24 02:09'
+updated_date: '2026-06-24 02:18'
 labels:
   - needs-triage
 dependencies: []
@@ -37,9 +37,16 @@ Reduce the friction of testing local changes (today: version bump → commit →
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Config parsing warns-and-ignores unknown TOML fields instead of failing: a config carrying removed sections (e.g. [inject]/[input]) still loads, real fields still apply, and the ignored keys are surfaced (logged by the daemon) so typos remain visible
-- [ ] #2 Config unit tests cover: an unknown section/field is ignored (not an error) and is reported in the collected-unknowns list; known fields still override defaults
-- [ ] #3 packaging/dev-setup.sh is idempotent: creates ~/.local/bin symlinks to target/release binaries and installs a systemd user ExecStart override for ghostty-voiced; documents the two-command inner loop
-- [ ] #4 A ghostty-voice-git PKGBUILD builds from the local working tree with pkgver() from git describe (no manual version bump/tag/checksums); the existing release PKGBUILD is unchanged
-- [ ] #5 README/RELEASE docs note the three layers (cargo inner loop, -git package, release PKGBUILD); full cargo test, clippy --all-targets, fmt --check stay green
+- [ ] #1 Config parsing stays strict: malformed TOML OR any unknown key/section (a typo, or a section left over from a previous version) is an error (deny_unknown_fields retained on every section)
+- [ ] #2 A present-but-invalid config is a loud, addressed failure, not silent defaults: the daemon refuses to start (aborts with the error logged) on an invalid config; a *missing* config still uses defaults
+- [ ] #3 `reload` rejects an invalid config — it keeps the running (last-good) config and returns the error to the client, never swapping to defaults or crashing the live daemon
+- [ ] #4 packaging/dev-setup.sh is idempotent: creates ~/.local/bin symlinks to target/release binaries and installs a systemd user ExecStart override for ghostty-voiced; a Makefile target runs the two-command inner loop
+- [ ] #5 A ghostty-voice-git PKGBUILD builds from the local repo with pkgver() from git describe (no manual version bump/tag/checksums); the existing release PKGBUILD is unchanged
+- [ ] #6 README/RELEASE docs note the three layers (cargo inner loop, -git package, release PKGBUILD) and the strict-config behavior; full cargo test, clippy --all-targets, fmt --check stay green
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Design pivot (maintainer decision): config must be CORRECT — fail for any reason, an addressed problem, not papered over. Reverted the warn-and-ignore/serde_ignored approach. Kept deny_unknown_fields (strict). The real bug surfaced: an invalid config was silently replaced with Config::default(). Fix: daemon aborts startup on an invalid (present) config and `reload` rejects it while keeping the running config. The 'delete xdg files on upgrade' step is therefore handled by treating a config-breaking release as an explicit fix-the-config event (loud failure tells you exactly what to remove), not by tolerating stale keys.
+<!-- SECTION:NOTES:END -->
