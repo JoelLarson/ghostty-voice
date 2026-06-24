@@ -29,6 +29,19 @@ you never run the full release pipeline just to test a code change:
    2/3) for the systemd unit to exist; re-running with no source change reinstalls
    identical bytes (idempotent).
 
+   **Config drift-guard.** Before copying any binary, the tool compares this
+   repo's static package files — `config.toml.example` and
+   `dist/ghostty-voiced.service` — against their installed counterparts
+   (`/usr/share/ghostty-voice/config.toml.example`,
+   `/usr/lib/systemd/user/ghostty-voiced.service`). If a file differs it shows the
+   diff and asks `overwrite installed configs? [y/N]`; **declining (or no TTY)
+   aborts before any binary is copied or the daemon restarted** — you get a
+   consistent version or nothing. Accepting `sudo`-overwrites the installed
+   file(s), reloads the user manager, and proceeds. An absent installed
+   counterpart is just installed. Your *personal*
+   `~/.config/ghostty-voice/config.toml` is never read or touched here — a stale
+   one fails loudly at the restart (strict config), which is the point.
+
 2. **Packaged integration test (you changed the unit/install hook/deps, or want a
    pacman-tracked install).** `packaging/ghostty-voice-git/` is a VCS PKGBUILD
    that builds the latest *committed* HEAD of the local repo — `pkgver()` from

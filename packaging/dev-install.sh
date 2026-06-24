@@ -43,6 +43,81 @@ build() {
   cargo build --release --manifest-path "$repo/Cargo.toml"
 }
 
+# Config drift-guard. Before any binary is copied, compare this repo's static
+# package files against what is installed, so a dev install never silently ships
+# binaries built against a newer config schema than the unit/example on disk. The
+# pairs are repo-source::installed-path:
+#
+#   config.toml.example       -> /usr/share/ghostty-voice/config.toml.example
+#   dist/ghostty-voiced.service -> /usr/lib/systemd/user/ghostty-voiced.service
+#
+# The maintainer's PERSONAL ~/.config/ghostty-voice/config.toml is deliberately
+# never read or written here: with strict config, a stale personal config fails
+# loudly at the restart, which is the intended signal — not something this tool
+# papers over.
+#
+# An absent installed counterpart is just installed (nothing to clobber). A
+# difference prompts once to overwrite ALL differing files; declining — or no TTY
+# to ask — aborts the whole run before any binary is copied and before the
+# restart, so the machine is left as a consistent version (or untouched).
+drift_guard() {
+  local pairs=(
+    "$repo/config.toml.example::/usr/share/ghostty-voice/config.toml.example"
+    "$repo/dist/ghostty-voiced.service::/usr/lib/systemd/user/ghostty-voiced.service"
+  )
+  local differ=()
+  local pair src dst
+
+  for pair in "${pairs[@]}"; do
+    src="${pair%%::*}"
+    dst="${pair##*::}"
+    if [ ! -e "$dst" ]; then
+      echo "installing: missing package file $dst (sudo)"
+      sudo install -Dm644 "$src" "$dst"
+    elif ! cmp -s "$src" "$dst"; then
+      differ+=("$pair")
+    fi
+  done
+
+  [ "${#differ[@]}" -eq 0 ] && return 0
+
+  echo "drift:      installed package file(s) differ from this repo:"
+  for pair in "${differ[@]}"; do
+    src="${pair%%::*}"
+    dst="${pair##*::}"
+    echo
+    # diff installed(old) -> repo(new): '<' is installed, '>' is this repo.
+    diff --label "$dst (installed)" --label "$src (repo)" "$dst" "$src" || true
+  done
+  echo
+
+  if [ ! -t 0 ]; then
+    echo "abort:      package files differ and no TTY to confirm overwrite; nothing installed or restarted" >&2
+    exit 1
+  fi
+
+  local reply
+  read -r -p "overwrite installed configs? [y/N] " reply
+  case "$reply" in
+    [yY] | [yY][eE][sS]) ;;
+    *)
+      echo "abort:      declined; nothing installed or restarted" >&2
+      exit 1
+      ;;
+  esac
+
+  for pair in "${differ[@]}"; do
+    src="${pair%%::*}"
+    dst="${pair##*::}"
+    echo "overwriting: $dst (sudo)"
+    sudo install -Dm644 "$src" "$dst"
+  done
+  # The unit file may have changed — re-read user units before the restart.
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl --user daemon-reload || true
+  fi
+}
+
 install_binaries() {
   echo "installing: ${bins[*]} -> /usr/bin (sudo)"
   for b in "${bins[@]}"; do
@@ -59,6 +134,9 @@ main() {
   # Build first: a failed build aborts here (set -e) before any system mutation,
   # so the install is all-or-nothing.
   build
+  # Then the drift-guard: a decline (or no TTY) aborts before any binary is
+  # copied and before the restart.
+  drift_guard
   migrate_off_override
   install_binaries
   restart_daemon
