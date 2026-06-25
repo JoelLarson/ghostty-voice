@@ -3,11 +3,11 @@ id: TASK-18
 title: >-
   PRD: streaming dictation — live self-editing preview into the agent prompt
   with batch-accurate reconcile (Shift+F9/F10)
-status: To Do
+status: Done
 assignee:
   - '@Joel Larson'
 created_date: '2026-06-25 04:21'
-updated_date: '2026-06-25 04:36'
+updated_date: '2026-06-25 05:22'
 labels:
   - prd
   - streaming
@@ -108,16 +108,16 @@ The spike is first because the two real risks — sustained decode cadence on on
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Shift+F9 starts a streaming dictation when idle: a new `streaming` command and `Trigger::Streaming` are recognized and consumed by the wrapper (not forwarded to the agent)
-- [ ] #2 While streaming, a live preview of the spoken words appears in the wrapped agent's prompt and revises in place — stable prefix committed and never flickering, unstable tail rewritten as Whisper firms up — and never presses Enter
-- [ ] #3 The streaming decoder is self-paced against the single existing whisper-server (no second model) and decodes a bounded sliding window so per-decode cost stays bounded across a multi-minute dictation
-- [ ] #4 Stable-vs-unstable splitting uses LocalAgreement-2 and is proven by pure, real-object unit tests over word sequences
-- [ ] #5 While a streaming dictation is active, the user's keystrokes to the wrapped agent are suppressed so live edits cannot desync (characters counted, not bytes)
-- [ ] #6 A streaming dictation ends hands-free on ~10s of trailing silence, or immediately on Shift+F10 (force-stop); both paths run the finalize/reconcile
-- [ ] #7 On finalize, the full-utterance batch transcription (beam-8 + initial_prompt + correction dictionary) replaces the live preview with the batch-accurate, jargon-corrected Transcript — no double-typing, no trailing newline
-- [ ] #8 The final Transcript flows through Delivery (bound-at-trigger, cached-before-type, Held-for-replay if the bound wrapper died); the live preview lane is ephemeral to the active wrapper and bypasses the record-order queue
-- [ ] #9 Each deep/extended module (streaming commit engine, window-PCM math, pty edit-bytes, trigger, protocol command/state/frames) has Chicago-style unit tests written test-first; the daemon streaming decoder loop has an integration test against the fake whisper-server asserting committed/tail evolution and the final reconcile
-- [ ] #10 A new ADR records streaming-preview + batch-reconcile as the conscious extension of ADR-0002; README/docs cover the new mode and the Shift+F9/F10 bindings; cargo test --workspace is green and clippy + fmt are clean
+- [x] #1 Shift+F9 starts a streaming dictation when idle: a new `streaming` command and `Trigger::Streaming` are recognized and consumed by the wrapper (not forwarded to the agent)
+- [x] #2 While streaming, a live preview of the spoken words appears in the wrapped agent's prompt and revises in place — stable prefix committed and never flickering, unstable tail rewritten as Whisper firms up — and never presses Enter
+- [x] #3 The streaming decoder is self-paced against the single existing whisper-server (no second model) and decodes a bounded sliding window so per-decode cost stays bounded across a multi-minute dictation
+- [x] #4 Stable-vs-unstable splitting uses LocalAgreement-2 and is proven by pure, real-object unit tests over word sequences
+- [x] #5 While a streaming dictation is active, the user's keystrokes to the wrapped agent are suppressed so live edits cannot desync (characters counted, not bytes)
+- [x] #6 A streaming dictation ends hands-free on ~10s of trailing silence, or immediately on Shift+F10 (force-stop); both paths run the finalize/reconcile
+- [x] #7 On finalize, the full-utterance batch transcription (beam-8 + initial_prompt + correction dictionary) replaces the live preview with the batch-accurate, jargon-corrected Transcript — no double-typing, no trailing newline
+- [x] #8 The final Transcript flows through Delivery (bound-at-trigger, cached-before-type, Held-for-replay if the bound wrapper died); the live preview lane is ephemeral to the active wrapper and bypasses the record-order queue
+- [x] #9 Each deep/extended module (streaming commit engine, window-PCM math, pty edit-bytes, trigger, protocol command/state/frames) has Chicago-style unit tests written test-first; the daemon streaming decoder loop has an integration test against the fake whisper-server asserting committed/tail evolution and the final reconcile
+- [x] #10 A new ADR records streaming-preview + batch-reconcile as the conscious extension of ADR-0002; README/docs cover the new mode and the Shift+F9/F10 bindings; cargo test --workspace is green and clippy + fmt are clean
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -142,3 +142,19 @@ End-state architecture (built incrementally, each slice green):
 
 Chicago TDD throughout: pure modules unit-tested with real word/byte lists; the daemon decode loop integration-tested against a stdlib fake whisper-server (transcribe.rs real-socket style), reconstructing the loop with the real core engine + real post_inference. Each slice: cargo test --workspace green, clippy clean, fmt clean, atomic commits. No task/slice IDs in source comments (CLAUDE.md) — reference ADR-0002 extension / CONTEXT concepts instead.
 <!-- SECTION:PLAN:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Streaming dictation shipped end to end across TASK-18.1 … TASK-18.6 on branch `task-18-streaming` (branched from `main`, left for human review).
+
+**What it does**: Shift+F9 starts a hands-free streaming dictation — a live, self-editing preview flows into the wrapped agent's prompt as you speak (settled words never flicker, the tail revises in place); a ~10 s silence or Shift+F10 finalizes; the full-utterance batch transcription (beam-8 + initial_prompt + corrections) then replaces the preview with the jargon-corrected Transcript. Keystrokes are suppressed during a dictation; cancel erases the preview. talk-to stays the sole interface; the final Transcript flows through Delivery (bound-at-trigger, Held-for-replay).
+
+**Deep, pure, isolation-tested modules**: the LocalAgreement-2 **commit engine** (`core/streaming.rs`), **window-PCM** math (`core/window.rs`), and **pty edit-bytes** + `PreviewCursor` (`core/pty.rs`). Extended pure modules: `trigger` (Shift+F9 → Streaming; `scan_suppressed`), `protocol` (`Command::Streaming`, `State::Streaming`, `Frame::LiveEdit`/`Frame::Finalize`), `machine` (Start/Stop/DiscardStreaming), `config` (`[streaming]` table). Thin daemon glue: `StreamingSession` + the self-paced `drive_streaming` decode loop (bounded window, live-lane beam, ephemeral push bypassing the queue) + `finalize_streaming` (batch reconcile through Delivery). io: `spawn_streaming_recorder`, `write_window_wav`.
+
+**Tests (Chicago-style, no GPU/mic)**: commit-engine, window math, pty edit-bytes (+ a stand-in line editor proving no stable-prefix flicker and codepoint-counted deletes), trigger, protocol, config, machine units; the `tests/streaming_decode.rs` integration test drives the real engine + cursor + line editor over the real Frame wire round-trips against a stdlib fake whisper-server (growing/revised hypotheses → live edits → batch reconcile → Delivery routing, Held when no wrapper); io real-file window tests prove bounded per-decode cost. `cargo test --workspace` green (298 tests), `cargo clippy --workspace --all-targets -- -D warnings` clean, `cargo fmt --check` clean — at every commit. New ADR-0004 records the extension of ADR-0002; README + CONTEXT.md document the mode.
+
+**Deviation-of-record**: built on `main`, which does not contain the TASK-17 module extraction (no `Recorder`/`Delivery`/`Capture`/`managed_child` modules — the daemon is still the monolithic `ghostty-voiced/src/main.rs`), per the AFK goal's "branch from main". The one-mouth invariant and Delivery/Held-for-replay are honoured structurally within the existing daemon and the CONTEXT.md vocabulary. If TASK-17 later merges to main, the streaming daemon glue should be re-seated onto the extracted Recorder/Capture/Delivery modules (mechanical; the pure modules are already the right shape).
+
+**Remaining human step**: a one-time manual smoke-test of live editing (backspace fidelity + cadence) in a real Claude Code composer — the real composer is intentionally not in CI; edit fidelity is proven there against a stand-in line editor (ADR-0004 / locked decision).
+<!-- SECTION:FINAL_SUMMARY:END -->
