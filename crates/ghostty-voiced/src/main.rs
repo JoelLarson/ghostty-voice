@@ -486,6 +486,7 @@ async fn teardown(daemon: &Arc<Mutex<Daemon>>) {
             let _ = ghostty_voice_io::audio::stop_recorder(&mut child);
         }
         let _ = std::fs::remove_file(&session.wav);
+        let _ = std::fs::remove_file(session.wav.with_extension("window.wav"));
     }
     if let Some(mut child) = d.whisper.take() {
         let _ = child.start_kill();
@@ -1016,12 +1017,6 @@ async fn end_continuous(
 
 // ---- streaming dictation ---------------------------------------------------
 
-/// The live-lane decoder beam width. A beam of 1 keeps each self-paced decode
-/// cheap — the live preview is a rough draft that the batch reconcile makes
-/// accurate (the conscious extension of ADR-0002). Lifted into the `[streaming]`
-/// config in a later slice.
-const LIVE_LANE_BEAM_SIZE: u32 = 1;
-
 /// Start a streaming dictation: capture into one growing WAV (sox auto-stops on
 /// the long session-end silence) and spawn the self-paced decode loop that pushes
 /// a live preview into the trigger-time-bound wrapper. The state machine only
@@ -1035,8 +1030,8 @@ fn start_streaming(d: &mut Daemon, daemon: &Arc<Mutex<Daemon>>) -> Result<()> {
     let child = ghostty_voice_io::audio::spawn_streaming_recorder(
         &d.config.audio.device,
         &wav,
-        d.config.audio.session_end_silence_seconds,
-        d.config.audio.vad_threshold_pct,
+        d.config.streaming.session_end_silence_seconds,
+        d.config.streaming.silence_threshold_pct,
     )?;
     d.streaming_gen += 1;
     let generation = d.streaming_gen;
@@ -1070,6 +1065,11 @@ fn start_streaming(d: &mut Daemon, daemon: &Arc<Mutex<Daemon>>) -> Result<()> {
 /// batch-accurate reconcile finalizes and delivers. Retires immediately if the
 /// session is cancelled (generation bumped) or the daemon shuts down.
 async fn drive_streaming(daemon: Arc<Mutex<Daemon>>, generation: u64) {
+    // The live lane decodes only a bounded sliding window of the growing capture
+    // so per-decode cost stays bounded across a multi-minute dictation. The offset
+    // advances monotonically with the window's left edge — committed audio drops
+    // out and is never re-decoded.
+    let mut window_offset = 0u64;
     loop {
         let (config, wav, sox_running, live_sender) = {
             let mut d = daemon.lock().await;
@@ -1101,14 +1101,34 @@ async fn drive_streaming(daemon: Arc<Mutex<Daemon>>, generation: u64) {
             (d.config.clone(), wav, sox_running, live_sender)
         };
 
-        // Decode the growing capture (the whole file this slice; a bounded sliding
-        // window comes later) once it carries at least the minimum audio.
+        // Decode only a bounded sliding window of the growing capture, once it
+        // carries at least the minimum audio. Writing the window to a temp WAV
+        // keeps per-decode cost bounded; if windowing fails, fall back to the whole
+        // capture rather than dropping the decode.
         let min_duration = Duration::from_secs_f64(config.audio.min_duration_seconds);
         let audio = ghostty_voice_io::audio::wav_duration(&wav).unwrap_or(Duration::ZERO);
-        if audio >= min_duration
-            && let Some(text) = decode_live(&config, &wav).await
-        {
-            push_live_edit(&daemon, generation, &text, live_sender.as_ref()).await;
+        if audio >= min_duration {
+            let window_bytes =
+                ghostty_voice_core::window::seconds_to_bytes(config.streaming.window_seconds);
+            let window_dest = wav.with_extension("window.wav");
+            let decode_path = match ghostty_voice_io::audio::write_window_wav(
+                &wav,
+                &window_dest,
+                window_bytes,
+                window_offset,
+            ) {
+                Ok(start) => {
+                    window_offset = start;
+                    window_dest
+                }
+                Err(e) => {
+                    warn!("streaming window slice failed ({e}); decoding the whole capture");
+                    wav.clone()
+                }
+            };
+            if let Some(text) = decode_live(&config, &decode_path).await {
+                push_live_edit(&daemon, generation, &text, live_sender.as_ref()).await;
+            }
         }
 
         if !sox_running {
@@ -1122,14 +1142,15 @@ async fn drive_streaming(daemon: Arc<Mutex<Daemon>>, generation: u64) {
     }
 }
 
-/// Decode the current capture on the live lane: a cheap `beam_size=1` pass with
-/// no `initial_prompt` (the live preview shows raw Whisper text; corrections are
-/// applied only in the batch reconcile). Returns the raw hypothesis text, or
-/// `None` if the server was unreachable or returned nothing — the loop simply
-/// tries again on the next pass (self-paced, lagging gracefully on a busy GPU).
+/// Decode the current window on the live lane: a cheap pass at the `[streaming]`
+/// beam width with no `initial_prompt` (the live preview shows raw Whisper text;
+/// corrections are applied only in the batch reconcile). Returns the raw
+/// hypothesis text, or `None` if the server was unreachable or returned nothing —
+/// the loop simply tries again on the next pass (self-paced, lagging gracefully
+/// on a busy GPU).
 async fn decode_live(config: &Config, wav: &Path) -> Option<String> {
     let params = ghostty_voice_io::transcribe::InferenceParams {
-        beam_size: LIVE_LANE_BEAM_SIZE,
+        beam_size: config.streaming.beam_size,
         temperature: config.whisper.temperature,
         initial_prompt: String::new(),
         prompt_truncated: false,
@@ -1236,6 +1257,7 @@ async fn finalize_streaming(daemon: Arc<Mutex<Daemon>>, generation: u64) {
         }
     }
     let _ = std::fs::remove_file(&wav);
+    let _ = std::fs::remove_file(wav.with_extension("window.wav"));
 }
 
 /// Abort the active streaming dictation (`cancel`): take the session, retire its
@@ -1248,6 +1270,7 @@ fn discard_streaming(d: &mut Daemon) {
             let _ = ghostty_voice_io::audio::stop_recorder(&mut child);
         }
         let _ = std::fs::remove_file(&session.wav);
+        let _ = std::fs::remove_file(session.wav.with_extension("window.wav"));
         info!("streaming dictation cancelled — discarded");
     }
 }

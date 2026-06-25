@@ -16,6 +16,8 @@ pub struct Config {
     pub audio: AudioConfig,
     pub feedback: FeedbackConfig,
     pub cache: CacheConfig,
+    /// `[streaming]` — the live self-editing dictation lane (Shift+F9).
+    pub streaming: StreamingConfig,
     /// `[corrections]` — deterministic jargon spell-fixer (`"why do tool" =
     /// "ydotool"`). A TOML table of `misheard = correct` pairs.
     pub corrections: BTreeMap<String, String>,
@@ -84,6 +86,37 @@ pub struct AudioConfig {
     /// next rather than transcribed alone, so stutters and micro-pauses don't
     /// spray tiny hallucination-prone fragments at Whisper (~2-3 s).
     pub min_clip_seconds: f32,
+}
+
+/// `[streaming]` — the streaming-dictation live lane (Shift+F9): a self-paced,
+/// bounded-window decode of the growing capture pushing a live preview, then the
+/// batch-accurate reconcile. The conscious extension of ADR-0002.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct StreamingConfig {
+    /// Bounded sliding-window length (seconds) the live lane decodes each pass, so
+    /// per-decode cost stays bounded across a multi-minute dictation (~15–20 s).
+    pub window_seconds: f32,
+    /// Live-lane decoder beam width — `1` keeps each self-paced decode cheap (the
+    /// preview is a rough draft; the batch reconcile makes it accurate).
+    pub beam_size: u32,
+    /// Trailing silence (seconds) that ends a streaming dictation hands-free
+    /// (~10 s) — tolerant of short mid-dictation pauses. `sox` auto-stops on it.
+    pub session_end_silence_seconds: f32,
+    /// The `sox` `silence` threshold as a percentage of full scale; audio below
+    /// this counts as silence. Defaults to the existing VAD threshold.
+    pub silence_threshold_pct: u32,
+}
+
+impl Default for StreamingConfig {
+    fn default() -> Self {
+        Self {
+            window_seconds: 15.0,
+            beam_size: 1,
+            session_end_silence_seconds: 10.0,
+            silence_threshold_pct: 3,
+        }
+    }
 }
 
 /// `[feedback]` — audio cues played on the hot path via `paplay`.
@@ -243,6 +276,28 @@ mod tests {
         assert_eq!(cfg.cache.wav_keep, 30);
         assert_eq!(cfg.cache.transcript_keep, 5);
         assert_eq!(cfg.cache.retry_window_seconds, 900);
+        // The [streaming] table defaults to the locked streaming-dictation values.
+        assert_eq!(cfg.streaming.window_seconds, 15.0);
+        assert_eq!(cfg.streaming.beam_size, 1);
+        assert_eq!(cfg.streaming.session_end_silence_seconds, 10.0);
+        assert_eq!(cfg.streaming.silence_threshold_pct, 3);
+    }
+
+    #[test]
+    fn a_missing_streaming_table_is_upgrade_tolerant_and_uses_defaults() {
+        // A config written before streaming existed (no [streaming] table) must
+        // still load, filling the whole table from its defaults.
+        let cfg = Config::from_toml_str("[whisper]\nport = 9000\n").unwrap();
+        assert_eq!(cfg.streaming, StreamingConfig::default());
+        assert_eq!(cfg.streaming.window_seconds, 15.0);
+    }
+
+    #[test]
+    fn a_partial_streaming_table_overrides_only_given_fields() {
+        let cfg = Config::from_toml_str("[streaming]\nwindow_seconds = 20.0\n").unwrap();
+        assert_eq!(cfg.streaming.window_seconds, 20.0); // overridden
+        assert_eq!(cfg.streaming.beam_size, 1); // still default
+        assert_eq!(cfg.streaming.session_end_silence_seconds, 10.0);
     }
 
     #[test]
@@ -286,6 +341,12 @@ wav_keep = 50
 transcript_keep = 8
 retry_window_seconds = 1200
 
+[streaming]
+window_seconds = 18.0
+beam_size = 2
+session_end_silence_seconds = 9.0
+silence_threshold_pct = 4
+
 [corrections]
 "why do tool" = "ydotool"
 "ghosty" = "Ghostty"
@@ -318,6 +379,10 @@ retry_window_seconds = 1200
         assert_eq!(cfg.cache.wav_keep, 50);
         assert_eq!(cfg.cache.transcript_keep, 8);
         assert_eq!(cfg.cache.retry_window_seconds, 1200);
+        assert_eq!(cfg.streaming.window_seconds, 18.0);
+        assert_eq!(cfg.streaming.beam_size, 2);
+        assert_eq!(cfg.streaming.session_end_silence_seconds, 9.0);
+        assert_eq!(cfg.streaming.silence_threshold_pct, 4);
     }
 
     #[test]

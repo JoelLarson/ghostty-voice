@@ -47,10 +47,31 @@ clip_cut_pause_seconds = 1.0
 session_end_silence_seconds = 10.0
 min_clip_seconds = 2.0
 
+[streaming]
+# Streaming dictation (Shift+F9): a live, self-editing preview flows into the
+# wrapped agent's prompt as you speak, then the batch-accurate, jargon-corrected
+# Transcript replaces it on stop. Tune to your machine and speech rhythm:
+#   window_seconds              - bounded sliding window each live decode covers,
+#                                 so per-decode cost stays bounded over a long
+#                                 dictation (~15-20 s)
+#   beam_size                   - live-lane decoder beam; 1 keeps each pass cheap
+#                                 (the preview is rough; the batch reconcile is the
+#                                 accurate one)
+#   session_end_silence_seconds - a trailing silence this long ends the dictation
+#                                 hands-free (~10 s; tolerates short pauses)
+#   silence_threshold_pct       - % of full scale below which audio counts as
+#                                 silence (defaults to the VAD threshold)
+window_seconds = 15.0
+beam_size = 1
+session_end_silence_seconds = 10.0
+silence_threshold_pct = 3
+
 # Triggers are not configured here. They are recognized inside `talk-to`: while
-# you are in the wrapped-agent window, Shift+F10 toggles a batch recording and
-# Shift+F9 starts a hands-free VAD recording. `ghostty-voice-ctl cancel` aborts
-# the current recording. There is no system-wide hotkey.
+# you are in the wrapped-agent window, Shift+F9 starts a hands-free streaming
+# dictation and Shift+F10 stops whatever is running (a streaming dictation
+# force-stops and finalizes) or else toggles a batch recording.
+# `ghostty-voice-ctl cancel` aborts the current recording/dictation, and batch
+# VAD mode stays available via `ghostty-voice-ctl vad`. No system-wide hotkey.
 
 [feedback]
 # Hot-path audio cues, all played via `paplay` (PipeWire — no libcanberra). Two

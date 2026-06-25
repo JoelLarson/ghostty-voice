@@ -145,6 +145,14 @@ pub fn wav_duration(wav: &Path) -> Result<Duration> {
 /// Find the `data` chunk's byte length in a canonical RIFF/WAVE file. Returns
 /// `None` if the header is absent or malformed.
 fn wav_data_len(bytes: &[u8]) -> Option<u64> {
+    wav_data_span(bytes).map(|(_offset, len)| len)
+}
+
+/// Find the `data` chunk's `(byte offset of its payload, payload length)` in a
+/// canonical RIFF/WAVE file. The length is clamped to what is actually present (a
+/// streamed/growing header may overstate). `None` if the header is absent or
+/// malformed.
+fn wav_data_span(bytes: &[u8]) -> Option<(usize, u64)> {
     if bytes.len() < 12 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
         return None;
     }
@@ -158,14 +166,65 @@ fn wav_data_len(bytes: &[u8]) -> Option<u64> {
             bytes[pos + 7],
         ]) as u64;
         if id == b"data" {
+            let payload = pos + 8;
             // Clamp to what's actually present (a streamed header may overstate).
-            let available = (bytes.len() - (pos + 8)) as u64;
-            return Some(size.min(available));
+            let available = (bytes.len() - payload) as u64;
+            return Some((payload, size.min(available)));
         }
         // Chunks are word-aligned: skip the body plus any pad byte.
         pos += 8 + size as usize + (size as usize & 1);
     }
     None
+}
+
+/// The canonical 44-byte WAV header for a 16 kHz mono s16 stream carrying
+/// `data_len` bytes of PCM payload.
+fn wav_header(data_len: u32) -> Vec<u8> {
+    let mut h = Vec::with_capacity(44);
+    let fmt_size: u32 = 16;
+    let riff_size = 4 + (8 + fmt_size) + (8 + data_len);
+    h.extend_from_slice(b"RIFF");
+    h.extend_from_slice(&riff_size.to_le_bytes());
+    h.extend_from_slice(b"WAVE");
+    h.extend_from_slice(b"fmt ");
+    h.extend_from_slice(&fmt_size.to_le_bytes());
+    h.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    h.extend_from_slice(&1u16.to_le_bytes()); // mono
+    h.extend_from_slice(&16_000u32.to_le_bytes()); // sample rate
+    h.extend_from_slice(&32_000u32.to_le_bytes()); // byte rate
+    h.extend_from_slice(&2u16.to_le_bytes()); // block align
+    h.extend_from_slice(&16u16.to_le_bytes()); // bits per sample
+    h.extend_from_slice(b"data");
+    h.extend_from_slice(&data_len.to_le_bytes());
+    h
+}
+
+/// Extract the bounded sliding window of the growing capture `src` into a fresh
+/// WAV at `dest`, and return the window's start byte (the daemon's new monotonic
+/// floor). The window is the last `window_bytes` of PCM, never reaching before
+/// `committed_offset` — so each live decode stays cheap regardless of how long the
+/// dictation runs and committed audio drops out (the window-PCM math lives in
+/// core; this is the RIFF `data`-chunk scan + slice + write at the I/O boundary).
+pub fn write_window_wav(
+    src: &Path,
+    dest: &Path,
+    window_bytes: u64,
+    committed_offset: u64,
+) -> Result<u64> {
+    let bytes = std::fs::read(src).with_context(|| format!("reading WAV {}", src.display()))?;
+    let (payload, data_len) = wav_data_span(&bytes)
+        .with_context(|| format!("no RIFF data chunk in {}", src.display()))?;
+
+    let (start, len) =
+        ghostty_voice_core::window::window_range(data_len, committed_offset, window_bytes);
+    let begin = payload + start as usize;
+    let end = begin + len as usize;
+    let pcm = &bytes[begin..end.min(bytes.len())];
+
+    let mut out = wav_header(pcm.len() as u32);
+    out.extend_from_slice(pcm);
+    std::fs::write(dest, &out).with_context(|| format!("writing window WAV {}", dest.display()))?;
+    Ok(start)
 }
 
 #[cfg(test)]
@@ -223,6 +282,59 @@ mod tests {
         std::fs::write(&path, wav_with_data(32_000)).unwrap();
         assert_eq!(wav_duration(&path).unwrap(), Duration::from_secs(1));
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn windowing_a_long_capture_stays_bounded_to_the_window() {
+        // A 60 s capture windowed to 15 s must yield a ~15 s WAV — per-decode cost
+        // is bounded no matter how long the dictation grows.
+        let dir = std::env::temp_dir();
+        let src = dir.join(format!("gv-window-long-{}.wav", std::process::id()));
+        let dest = dir.join(format!("gv-window-long-out-{}.wav", std::process::id()));
+        std::fs::write(&src, wav_with_data(60 * 32_000)).unwrap();
+
+        let window_bytes = 15 * 32_000;
+        let start = write_window_wav(&src, &dest, window_bytes, 0).unwrap();
+        // The window is the trailing 15 s: starts at 45 s, the WAV holds exactly 15 s.
+        assert_eq!(start, 45 * 32_000);
+        let out = wav_duration(&dest).unwrap();
+        assert_eq!(out, Duration::from_secs(15), "bounded to the window length");
+
+        let _ = std::fs::remove_file(&src);
+        let _ = std::fs::remove_file(&dest);
+    }
+
+    #[test]
+    fn windowing_a_short_capture_passes_the_whole_file() {
+        // Under the window length ⇒ the whole (sub-window) capture, from byte 0.
+        let dir = std::env::temp_dir();
+        let src = dir.join(format!("gv-window-short-{}.wav", std::process::id()));
+        let dest = dir.join(format!("gv-window-short-out-{}.wav", std::process::id()));
+        std::fs::write(&src, wav_with_data(2 * 32_000)).unwrap(); // 2 s
+
+        let start = write_window_wav(&src, &dest, 15 * 32_000, 0).unwrap();
+        assert_eq!(start, 0);
+        assert_eq!(wav_duration(&dest).unwrap(), Duration::from_secs(2));
+
+        let _ = std::fs::remove_file(&src);
+        let _ = std::fs::remove_file(&dest);
+    }
+
+    #[test]
+    fn windowing_excludes_committed_audio() {
+        // 10 s present, the first 4 s committed, generous window ⇒ the window
+        // starts at the committed offset, so committed audio is never re-decoded.
+        let dir = std::env::temp_dir();
+        let src = dir.join(format!("gv-window-commit-{}.wav", std::process::id()));
+        let dest = dir.join(format!("gv-window-commit-out-{}.wav", std::process::id()));
+        std::fs::write(&src, wav_with_data(10 * 32_000)).unwrap();
+
+        let start = write_window_wav(&src, &dest, 30 * 32_000, 4 * 32_000).unwrap();
+        assert_eq!(start, 4 * 32_000, "window begins at the committed offset");
+        assert_eq!(wav_duration(&dest).unwrap(), Duration::from_secs(6));
+
+        let _ = std::fs::remove_file(&src);
+        let _ = std::fs::remove_file(&dest);
     }
 
     fn sox_available() -> bool {
