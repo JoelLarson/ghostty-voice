@@ -68,8 +68,11 @@ fi
 echo "ghostty-voice mic level meter"
 echo "  source:    $src_label"
 echo "  threshold: ${THRESH}% full scale  (VAD=${THR_VAD}%, streaming=${THR_STREAM}%)"
-echo "  Talk and watch the bar: it should cross the ┃ marker (turn green,"
-echo "  ▶ SPEAKING) while you talk and drop below it when silent.  Ctrl-C to stop."
+echo "  The bar is your SUSTAINED level (RMS) — that's what sox's silence detector"
+echo "  uses, NOT peaks. Talk: the bar should cross the ┃ marker (turn green, ▶ SOUND)"
+echo "  while you speak and drop below it when silent. If only brief peaks cross but"
+echo "  the bar stays under the marker, VAD treats your speech as silence — lower the"
+echo "  threshold below your speaking bar.  Ctrl-C to stop."
 echo
 
 # The audio flows on the pipe into the meter's stdin; the program itself is a

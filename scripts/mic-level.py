@@ -73,8 +73,12 @@ try:
         peak_hold = max(peak_hold * 0.90, peak)
         sess_peak = max(sess_peak, peak)
 
-        above = peak >= thr_frac
-        tag = f"{GREEN}{BOLD}▶ SPEAKING{RESET}" if above else f"{DIM}· silent  {RESET}"
+        # sox's `silence` effect detects on the *sustained* level (~RMS), not
+        # peaks — so compare RMS to the threshold to predict whether VAD/streaming
+        # will treat this as sound (record) or silence (trim). A signal that only
+        # peaks above the line but whose RMS is below it is captured as silence.
+        above = rms >= thr_frac
+        tag = f"{GREEN}{BOLD}▶ SOUND {RESET}" if above else f"{DIM}· silent{RESET}"
         line = (
             f"\r{bar(dbfs(rms), thr_db)}  "
             f"RMS {rms * 100:5.2f}% ({dbfs(rms):6.1f}dB)  "
