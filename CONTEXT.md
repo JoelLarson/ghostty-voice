@@ -58,9 +58,37 @@ to retain cross-clip context.
 A full **Continuous mode** dictation: an ordered sequence of **Clips** whose transcripts
 are assembled, in order, into one **Transcript** delivered at the end.
 
+**Streaming dictation** _(Shift+F9)_:
+A dictation that shows a **Live preview** in the wrapped agent's prompt *as you speak*, then
+replaces it with the batch-accurate **Transcript** on stop (the **Reconcile**). A self-paced
+loop decodes a bounded sliding window of the growing capture on the one existing whisper-server
+and revises the preview in place; a ~10 s silence ends it hands-free, or Shift+F10 force-stops
+it. The immediacy mode — distinct from **Continuous mode** (background accuracy) and **VAD**
+(one batch utterance). The conscious extension of ADR-0002 (`docs/adr/0004`).
+
+**Live preview** _(Streaming dictation)_:
+The ephemeral, *rough* text pushed into the **active** wrapper sink during a **Streaming
+dictation** — raw Whisper output (no **Correction dictionary**), revised in place. It bypasses
+the **Delivery queue** (it is not an **Utterance**); only the final **Transcript** flows through
+**Delivery**. A **Stable prefix** of committed words never flickers; the **Unstable tail** is
+rewritten each decode.
+
+**Stable prefix / Unstable tail** _(Streaming dictation)_:
+The two parts of the **Live preview**. A word joins the **Stable prefix** (committed, never
+rewritten) once two consecutive decodes agree on it (**LocalAgreement-2**); everything after it
+is the **Unstable tail**, re-typed as Whisper firms up. The prefix grows monotonically and never
+retracts.
+
+**Reconcile** _(Streaming dictation)_:
+The finalize step: on stop, the full-utterance **batch** transcription (beam-8, `initial_prompt`,
+**Correction dictionary**) over the complete capture **replaces** the whole **Live preview** with
+the accurate, jargon-corrected **Transcript** — delivered through **Delivery** (bound-at-trigger,
+**Held-for-replay** if the bound wrapper died). Live immediacy without losing batch accuracy.
+
 **Cancel**:
-Abort the **Recorder**'s current recording and discard its audio. Does not touch
-utterances already in the **Delivery queue**.
+Abort the **Recorder**'s current recording (or **Streaming dictation**) and discard its audio —
+a cancelled dictation also erases its **Live preview** from the prompt. Does not touch utterances
+already in the **Delivery queue**.
 
 **Delivery sink** _(or **Sink**)_:
 A destination a **Transcript** is delivered to — always a **wrapper sink**, a running

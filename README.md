@@ -9,7 +9,8 @@ wrapped agent's PTY. The text is **never auto-submitted** — you review before 
 actively using. There is **no system-wide hotkey** and **no typing into the focused window**.
 
 See `PLAN.md` for the full design, `CONTEXT.md` for the domain language, and `docs/adr/` for
-the load-bearing decisions (`docs/adr/0003` records this interface model).
+the load-bearing decisions (`docs/adr/0003` records this interface model; `docs/adr/0004` records
+streaming dictation as the conscious extension of the batch-first decision in `docs/adr/0002`).
 
 ## Architecture
 
@@ -60,7 +61,7 @@ daemon — which runs the dev build because the packaged unit's `ExecStart` is
    advancing on whole-percent changes — a bare `downloading` until the server reports a total
    size. Download progress is **not** sent via `notify-send`; the start/progress/completion/
    failure milestones stay in the journald log (`journalctl --user -u ghostty-voiced`). While
-   downloading, `toggle`/`vad`/`continuous` are rejected with
+   downloading, `toggle`/`vad`/`streaming`/`continuous` are rejected with
    "model still downloading" — the daemon never hangs. The fetch is SHA-256 verified if you pin
    `[whisper].model_sha256` (copy the hash from the HuggingFace LFS page); leave it empty to
    accept by presence. A failed/corrupt fetch is discarded and retried with backoff.
@@ -97,6 +98,9 @@ The slice each key belongs to:
 - `[audio]` — `max_recording_seconds` (runaway cap, S3), `min_duration_seconds` (S4),
   `vad_silence_seconds` / `vad_threshold_pct` (VAD, S5), `clip_cut_pause_seconds` /
   `session_end_silence_seconds` / `min_clip_seconds` (Continuous mode, S6).
+- `[streaming]` — the streaming-dictation live lane: `window_seconds` (bounded sliding-window
+  length each live decode covers), `beam_size` (live-lane decoder beam — `1` keeps it cheap),
+  `session_end_silence_seconds` (hands-free end of a dictation), `silence_threshold_pct`.
 - `[feedback]` — `sound_start` / `sound_stop` (cues, S7): a freedesktop theme event id (default)
   or a sound-file path — both played via `paplay`; empty disables.
 - `[cache]` — `wav_keep`, `transcript_keep`, and `retry_window_seconds` (how long the daemon
@@ -119,17 +123,40 @@ talk-to ssh host claude
 *presses* only (no hold/release timing), so these are discrete commands — there is no tap/hold or
 push-to-talk:
 
-- **Shift+F10** — **toggle**: start a batch recording; press again to stop and transcribe.
-- **Shift+F9** — start a hands-free **VAD** recording: `sox` auto-stops on the first trailing
-  silence, then transcribes.
+- **Shift+F9** — start a hands-free **streaming dictation**: a live, self-editing preview flows
+  into the prompt as you speak (see **Streaming dictation** below). A ~10 s trailing silence ends
+  it; Shift+F10 force-stops it now.
+- **Shift+F10** — **stop whatever is running**: a streaming dictation force-stops and finalizes;
+  otherwise this is the batch **toggle** — start a batch recording, press again to stop and
+  transcribe.
 
 The transcript is delivered into the wrapped agent's PTY with **no trailing Enter** — you review
 and press Enter yourself. Triggers fire **only** in the `talk-to` window; nothing happens when
 you are focused elsewhere.
 
+> Hands-free batch **VAD** mode (record, auto-stop on the first silence, transcribe) relinquished
+> the Shift+F9 key to streaming but is still available on demand via `ghostty-voice-ctl vad`.
+
+### Streaming dictation (Shift+F9)
+
+Press **Shift+F9** and start talking. As you speak, a **live preview** flows into the wrapped
+agent's prompt and **revises itself in place** — settled words stay put (a stable prefix that
+never flickers) while the most recent words are rewritten as Whisper firms them up. A ~10 s
+silence ends the dictation hands-free, or **Shift+F10** force-stops it immediately. On stop, the
+full-utterance **batch** transcription (beam-8, `initial_prompt`, correction dictionary) replaces
+the preview with the accurate, jargon-corrected **Transcript** — live immediacy *and* batch
+accuracy, with **no trailing Enter**. While dictating, your **keystrokes are suppressed** to the
+agent (only Shift+F9/F10 still resolve) so the live edits can't desync; the bottom strip shows
+`streaming`. `ghostty-voice-ctl cancel` aborts a dictation, erasing the preview and delivering
+nothing. The live preview is a deliberately *rough* draft reconciled by the batch pass — the
+conscious extension of ADR-0002 recorded in `docs/adr/0004`.
+
 Other commands go through `ghostty-voice-ctl`:
 
-- **Cancel** the current recording: `ghostty-voice-ctl cancel`.
+- **Cancel** the current recording or streaming dictation: `ghostty-voice-ctl cancel`.
+- **VAD** (hands-free batch, one utterance): `ghostty-voice-ctl vad` — `sox` records and auto-stops
+  on the first trailing silence, then transcribes. (Shift+F9 now starts a streaming dictation
+  instead; VAD lives here.)
 - **Continuous mode** (the north-star long-form mode): `ghostty-voice-ctl continuous`. Short
   pauses cut the audio into **clips** that batch-transcribe in the background (context-chained),
   and a long silence (~10 s) ends the **session** — the assembled transcript is delivered once.
@@ -189,8 +216,8 @@ systemctl --user restart ghostty-voiced
 ```
 
 **Strip / link states.** While registered, `talk-to`'s bottom strip shows the daemon voice
-**State** (`idle`/`recording`/`transcribing`, and on first run `downloading <pct>%` as the model
-fetches). Otherwise it shows a distinct link token — `unreachable` (no daemon), `incompatible`
+**State** (`idle`/`recording`/`transcribing`/`streaming`, and on first run `downloading <pct>%` as
+the model fetches). Otherwise it shows a distinct link token — `unreachable` (no daemon), `incompatible`
 (stale/old daemon — restart it, see above), `rejected` (registration refused), or `dropped` (a
 previously-good connection ended). In every non-registered case `talk-to` keeps working as a plain
 passthrough; the reason is logged to `~/.local/state/ghostty-voice/talk-to.log` (`$XDG_STATE_HOME`
@@ -203,9 +230,10 @@ if set).
   cached to `$XDG_CACHE_HOME/ghostty-voice/transcripts/` *before* delivery, so it is never lost
   even if a PTY write fails — recover it with `ghostty-voice-ctl replay-last`. WAV recordings are
   kept under `recordings/` (count-capped) as a debugging corpus.
-- **Triggers do nothing** — they fire only while you are in the `talk-to` window (Shift+F10 =
-  toggle, Shift+F9 = VAD). Confirm the daemon is reachable with `ghostty-voice-ctl doctor`, and
-  that the strip shows a daemon state rather than a link token (see above).
+- **Triggers do nothing** — they fire only while you are in the `talk-to` window (Shift+F9 =
+  start a streaming dictation, Shift+F10 = stop whatever runs / batch toggle). Confirm the daemon
+  is reachable with `ghostty-voice-ctl doctor`, and that the strip shows a daemon state rather than
+  a link token (see above).
 - **Wrong GPU / slow** — check the daemon log (`journalctl --user -u ghostty-voiced`) for the
   `pinning whisper-server to Vulkan device N` line; confirm it's your discrete card.
 - **Vulkan not used (silent CPU fallback)** — confirm RADV sees your card with
