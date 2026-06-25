@@ -243,16 +243,29 @@ fn live_preview_self_edits_in_place_then_reconciles_to_the_batch_accurate_transc
         .map(|(s, t)| (s, t.to_owned()))
         .unwrap();
     assert_eq!(head, seq);
-    match registry.route(bound) {
-        Route::Wrapper(id) => assert_eq!(id, wrapper, "delivered to the bound wrapper"),
+    // Routed to the live bound wrapper ⇒ delivered as a Finalize/replace frame.
+    let frame = match registry.route(bound) {
+        Route::Wrapper(id) => {
+            assert_eq!(id, wrapper, "delivered to the bound wrapper");
+            Frame::Finalize(text)
+        }
         other => panic!("expected a wrapper route, got {other:?}"),
-    }
-    // The wrapper applies the finalize: the rough preview is replaced wholesale.
-    editor.apply(&cursor.finalize(&text));
+    };
+    // The wrapper parses the Finalize frame and replaces the rough preview wholesale
+    // — no double-typing, no trailing Enter.
+    let Ok(Frame::Finalize(final_text)) = Frame::parse(&frame.encode()) else {
+        panic!("a Finalize frame must round-trip");
+    };
+    editor.apply(&cursor.finalize(&final_text));
     assert_eq!(
         editor.text(),
         "run ydotool",
-        "preview replaced by the reconcile"
+        "preview replaced by the reconcile, no double-typing"
+    );
+    assert_eq!(
+        cursor.preview_len(),
+        0,
+        "the preview buffer is fully consumed"
     );
 
     let _ = std::fs::remove_file(&wav);
@@ -298,6 +311,24 @@ fn with_no_wrapper_registered_the_live_preview_no_ops_and_the_final_is_held() {
 
     // Bound to nothing ⇒ Held-for-replay, never redirected.
     assert_eq!(registry.route(bound), Route::Held);
+
+    // A held streaming finalize replays later as a plain Transcript append: there
+    // is no live preview to erase (the bound wrapper was gone), so it lands as a
+    // normal injection in whatever wrapper is active at replay time.
+    let cursor = PreviewCursor::new();
+    let mut editor = LineEditor::default();
+    let Ok(Frame::Transcript(replayed)) =
+        Frame::parse(&Frame::Transcript(reconciled.clone()).encode())
+    else {
+        panic!("replay uses a plain Transcript frame");
+    };
+    editor.apply(&ghostty_voice_core::pty::injection_bytes(&replayed));
+    assert_eq!(editor.text(), "create a function");
+    assert_eq!(
+        cursor.preview_len(),
+        0,
+        "no preview was ever built to erase"
+    );
 
     let _ = std::fs::remove_file(&wav);
 }

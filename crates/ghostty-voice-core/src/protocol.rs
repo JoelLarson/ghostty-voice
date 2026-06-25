@@ -203,6 +203,13 @@ pub enum Frame {
     /// is an ephemeral rough preview reconciled by the batch Transcript on
     /// finalize — the conscious extension of ADR-0002.
     LiveEdit { committed: String, tail: String },
+    /// **Finalize** a streaming dictation: replace the whole live preview with the
+    /// batch-accurate, jargon-corrected **Transcript**. The wrapper erases its
+    /// entire current streaming buffer (stable prefix + tail) and types this text,
+    /// newline-stripped — the reconcile, with no double-typing. Pushed only to the
+    /// *live* bound wrapper; a Held-for-replay delivery re-injects a plain
+    /// [`Frame::Transcript`] append instead (there is no preview left to erase).
+    Finalize(String),
 }
 
 /// Separator between a [`Frame::LiveEdit`]'s `committed` and `tail` fields on the
@@ -220,6 +227,7 @@ impl Frame {
             Frame::LiveEdit { committed, tail } => {
                 format!("live-edit {committed}{LIVE_EDIT_SEP}{tail}")
             }
+            Frame::Finalize(text) => format!("finalize {text}"),
         }
     }
 
@@ -231,6 +239,9 @@ impl Frame {
         let line = line.strip_suffix('\r').unwrap_or(line);
         if let Some(text) = line.strip_prefix("transcript ") {
             return Ok(Frame::Transcript(text.to_owned()));
+        }
+        if let Some(text) = line.strip_prefix("finalize ") {
+            return Ok(Frame::Finalize(text.to_owned()));
         }
         if let Some(rest) = line.strip_prefix("live-edit ") {
             let (committed, tail) = rest.split_once(LIVE_EDIT_SEP).unwrap_or((rest, ""));
@@ -534,6 +545,22 @@ mod tests {
         ] {
             assert_eq!(Frame::parse(&frame.encode()), Ok(frame));
         }
+    }
+
+    #[test]
+    fn finalize_frame_round_trips_preserving_internal_spacing() {
+        // The reconcile replaces the preview with the batch Transcript; its exact
+        // spacing must survive so the typed text matches what was transcribed.
+        let frame = Frame::Finalize("run ydotool  on Ghostty".to_owned());
+        assert_eq!(frame.encode(), "finalize run ydotool  on Ghostty");
+        assert_eq!(Frame::parse(&frame.encode()), Ok(frame));
+    }
+
+    #[test]
+    fn a_transcript_whose_text_begins_with_finalize_stays_a_transcript() {
+        // The `transcript ` prefix is checked before `finalize `.
+        let frame = Frame::Transcript("finalize the refactor".to_owned());
+        assert_eq!(Frame::parse(&frame.encode()), Ok(frame));
     }
 
     #[test]

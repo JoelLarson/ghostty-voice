@@ -395,6 +395,14 @@ fn apply_frame(shared: &Arc<Mutex<Shared>>, line: &str) {
                 .pending_inject
                 .extend_from_slice(&injection_bytes(&text));
         }
+        // The streaming reconcile: erase the whole rough preview and type the
+        // batch-accurate Transcript in its place — no double-typing, no trailing
+        // newline (review-before-Enter).
+        Ok(Frame::Finalize(text)) => {
+            let mut sh = shared.lock().unwrap();
+            let bytes = sh.cursor.finalize(&text);
+            sh.pending_inject.extend_from_slice(&bytes);
+        }
         // A streaming live-edit revises the preview in place: erase the previous
         // tail, type the newly-committed text, then the new tail (no trailing
         // newline — review-before-Enter). Settled words never flicker.

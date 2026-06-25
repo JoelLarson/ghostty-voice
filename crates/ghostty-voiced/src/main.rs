@@ -13,7 +13,7 @@
 
 mod vulkan_enum;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Child as RecorderChild;
 use std::sync::Arc;
@@ -81,6 +81,12 @@ struct Daemon {
     /// wrapper that dies before delivery is Held-for-replay, not redirected.
     /// `None` means no wrapper was active at trigger time (nowhere to deliver).
     bindings: HashMap<u64, Option<SinkId>>,
+    /// Queue seqs whose Transcript is a **streaming finalize** — delivered to a
+    /// live bound wrapper as a [`Frame::Finalize`] (erase the live preview, type
+    /// the reconciled Transcript) rather than a plain append. A Held-for-replay
+    /// streaming finalize (bound wrapper gone) replays as a plain Transcript, so
+    /// the marker only affects the live-delivery push.
+    streaming_seqs: HashSet<u64>,
     /// Broadcasts daemon [`State`] changes to every registered wrapper sink so
     /// each one's status strip stays live. Updated via [`Daemon::set_state`].
     state_tx: watch::Sender<State>,
@@ -187,6 +193,7 @@ async fn main() -> Result<()> {
         sinks: SinkRegistry::new(),
         sink_conns: HashMap::new(),
         bindings: HashMap::new(),
+        streaming_seqs: HashSet::new(),
         state_tx,
         shutting_down: false,
     }));
@@ -1213,6 +1220,9 @@ async fn finalize_streaming(daemon: Arc<Mutex<Daemon>>, generation: u64) {
                 let mut d = daemon.lock().await;
                 let seq = d.queue.enqueue();
                 d.bindings.insert(seq, bound);
+                // Mark this as a streaming finalize so the drain delivers it as a
+                // replace frame to a live wrapper (erasing the live preview).
+                d.streaming_seqs.insert(seq);
                 d.queue.set_ready(seq, text);
                 seq
             };
@@ -1419,11 +1429,12 @@ async fn drain_queue(daemon: &Arc<Mutex<Daemon>>) {
                     sender,
                     d.transcripts_dir(),
                     d.config.cache.transcript_keep,
+                    d.streaming_seqs.contains(&seq),
                 )
             })
         };
 
-        let Some((seq, transcript, route, sender, tdir, tkeep)) = next else {
+        let Some((seq, transcript, route, sender, tdir, tkeep, is_finalize)) = next else {
             break; // head is pending or queue is empty
         };
 
@@ -1434,16 +1445,19 @@ async fn drain_queue(daemon: &Arc<Mutex<Daemon>>) {
         }
 
         match route {
-            // Wrapper sink: push the Transcript frame down the registered
-            // connection; `talk-to` writes it into the agent's PTY (no Enter).
+            // Wrapper sink: push the Transcript down the registered connection;
+            // `talk-to` writes it into the agent's PTY (no Enter). A streaming
+            // finalize is pushed as a replace frame so the wrapper erases its live
+            // preview first (no double-typing); every other utterance is a plain
+            // append.
             Route::Wrapper(id) => {
-                let pushed = sender.is_some_and(|tx| {
-                    tx.send(format!(
-                        "{}\n",
-                        Frame::Transcript(transcript.clone()).encode()
-                    ))
-                    .is_ok()
-                });
+                let frame = if is_finalize {
+                    Frame::Finalize(transcript.clone())
+                } else {
+                    Frame::Transcript(transcript.clone())
+                };
+                let pushed =
+                    sender.is_some_and(|tx| tx.send(format!("{}\n", frame.encode())).is_ok());
                 if pushed {
                     info!("utterance {seq}: delivered to wrapper sink {id:?}");
                 } else {
@@ -1463,6 +1477,7 @@ async fn drain_queue(daemon: &Arc<Mutex<Daemon>>) {
         let mut d = daemon.lock().await;
         d.queue.resolve(seq);
         d.bindings.remove(&seq);
+        d.streaming_seqs.remove(&seq);
     }
 
     daemon.lock().await.draining = false;
