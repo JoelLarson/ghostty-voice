@@ -93,6 +93,24 @@ pub fn scan(buf: &[u8]) -> Vec<Segment<'_>> {
     out
 }
 
+/// Scan `buf` while a streaming dictation is active: the trigger combos still
+/// resolve (so Shift+F9/F10 keep working), but every other keystroke is
+/// **suppressed** — dropped, not forwarded and not buffered.
+///
+/// While dictating, the only thing allowed to mutate the wrapped composer is our
+/// own live-edit injection; a stray keystroke would desync the backspace
+/// character count, so ordinary input is dropped (the strip shows the dictation is
+/// live). The caller forwards verbatim again via [`scan`] once the dictation ends.
+pub fn scan_suppressed(buf: &[u8]) -> Vec<Trigger> {
+    scan(buf)
+        .into_iter()
+        .filter_map(|segment| match segment {
+            Segment::Trigger(trigger) => Some(trigger),
+            Segment::Forward(_) => None, // suppressed (dropped, not buffered)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,5 +190,30 @@ mod tests {
         // A bare ESC (e.g. the user pressing Escape) must not be eaten while
         // looking for a trigger sequence.
         assert_eq!(scan(b"\x1b"), vec![Segment::Forward(b"\x1b")]);
+    }
+
+    // ---- keystroke suppression while a streaming dictation is active --------
+
+    #[test]
+    fn while_streaming_ordinary_keystrokes_are_dropped() {
+        // Typing while dictating must not reach the child — it would desync the
+        // live edits. Nothing is forwarded and nothing is buffered.
+        assert_eq!(scan_suppressed(b"ls -la\n"), Vec::<Trigger>::new());
+        assert_eq!(scan_suppressed(b"\x1b"), Vec::<Trigger>::new());
+    }
+
+    #[test]
+    fn while_streaming_the_trigger_keys_still_resolve() {
+        // Shift+F10 (force-stop/finalize) and Shift+F9 still fire mid-dictation;
+        // only ordinary input is suppressed.
+        assert_eq!(scan_suppressed(b"\x1b[21;2~"), vec![Trigger::Toggle]);
+        assert_eq!(scan_suppressed(b"\x1b[20;2~"), vec![Trigger::Streaming]);
+    }
+
+    #[test]
+    fn while_streaming_a_trigger_amid_typed_text_still_resolves_and_the_text_drops() {
+        // The trigger is extracted; the surrounding keystrokes are dropped (not
+        // forwarded), unlike the non-streaming `scan` which forwards them.
+        assert_eq!(scan_suppressed(b"abc\x1b[21;2~def"), vec![Trigger::Toggle]);
     }
 }

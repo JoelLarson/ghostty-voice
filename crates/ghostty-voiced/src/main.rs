@@ -1261,13 +1261,23 @@ async fn finalize_streaming(daemon: Arc<Mutex<Daemon>>, generation: u64) {
 }
 
 /// Abort the active streaming dictation (`cancel`): take the session, retire its
-/// driver task, stop sox, and bin the capture — the live preview is abandoned and
-/// nothing is delivered.
+/// driver task, stop sox, bin the capture, and **erase the live preview** in the
+/// bound wrapper (an empty finalize), so the prompt is left clean and nothing is
+/// delivered.
 fn discard_streaming(d: &mut Daemon) {
     if let Some(mut session) = d.streaming.take() {
         d.streaming_gen += 1; // retire the driver task
         if let Some(mut child) = session.recorder.take() {
             let _ = ghostty_voice_io::audio::stop_recorder(&mut child);
+        }
+        // Erase whatever live preview we typed: an empty finalize backspaces the
+        // whole streaming buffer and types nothing. Pushed to the trigger-bound
+        // wrapper only if it is still live.
+        if let Some(id) = session.bound
+            && d.sinks.is_live(id)
+            && let Some(tx) = d.sink_conns.get(&id)
+        {
+            let _ = tx.send(format!("{}\n", Frame::Finalize(String::new()).encode()));
         }
         let _ = std::fs::remove_file(&session.wav);
         let _ = std::fs::remove_file(session.wav.with_extension("window.wav"));

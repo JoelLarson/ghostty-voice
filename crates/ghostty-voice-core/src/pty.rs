@@ -308,6 +308,27 @@ mod tests {
     }
 
     #[test]
+    fn cancel_erases_the_whole_preview_and_types_nothing() {
+        // `cancel` during a dictation delivers an empty finalize: the whole rough
+        // preview is backspaced and nothing is typed in its place — the prompt is
+        // left clean and nothing is delivered.
+        let mut cursor = PreviewCursor::new();
+        let mut editor = LineEditor::default();
+        editor.apply(&cursor.apply_edit("", "rebase onto"));
+        assert_eq!(editor.text(), "rebase onto");
+
+        let erase = cursor.finalize("");
+        assert_eq!(
+            erase,
+            vec![0x7f; 11],
+            "erases the 11-char preview, types nothing"
+        );
+        editor.apply(&erase);
+        assert_eq!(editor.text(), "", "the streaming buffer is erased");
+        assert_eq!(cursor.preview_len(), 0);
+    }
+
+    #[test]
     fn reset_clears_the_cursor_between_dictations() {
         let mut cursor = PreviewCursor::new();
         cursor.apply_edit("", "leftover tail");

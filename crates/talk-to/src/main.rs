@@ -69,6 +69,11 @@ struct Shared {
     /// frame is turned into the right erase-and-type byte stream. Reset at the
     /// start of each dictation (on entering the `streaming` state).
     cursor: PreviewCursor,
+    /// True while a streaming dictation is active (the daemon is in the `streaming`
+    /// state). The proxy loop suppresses the user's keystrokes while this holds so
+    /// nothing but our injection mutates the composer. Cleared when the dictation
+    /// finalizes/cancels (the daemon returns to a non-streaming state).
+    streaming: bool,
 }
 
 fn main() -> Result<()> {
@@ -100,6 +105,7 @@ fn main() -> Result<()> {
         state: "idle".to_owned(),
         pending_inject: Vec::new(),
         cursor: PreviewCursor::new(),
+        streaming: false,
     }));
     spawn_sink_client(shared.clone());
 
@@ -165,9 +171,13 @@ fn proxy_loop(
         // Apply whatever the daemon-socket client produced: inject pending
         // Transcript bytes into the child (no trailing newline — already stripped
         // by `injection_bytes`), and repaint the strip if the voice state changed.
-        let (inject, state_now) = {
+        let (inject, state_now, streaming) = {
             let mut sh = shared.lock().unwrap();
-            (std::mem::take(&mut sh.pending_inject), sh.state.clone())
+            (
+                std::mem::take(&mut sh.pending_inject),
+                sh.state.clone(),
+                sh.streaming,
+            )
         };
         if !inject.is_empty() {
             write_all_fd(master, &inject);
@@ -188,22 +198,33 @@ fn proxy_loop(
 
         // stdin → child PTY. Recognize the in-terminal triggers (Shift+F10/F9):
         // they are consumed and sent to the daemon, never forwarded to the child.
-        // The F12 debug key is still intercepted; everything else passes verbatim.
+        // While a streaming dictation is active, the user's keystrokes are
+        // suppressed (only the trigger keys still resolve) so a stray keystroke
+        // can't desync the live edits — the strip shows the dictation is live.
+        // Otherwise the F12 debug key is intercepted and everything else passes
+        // verbatim.
         if fds[0].revents & libc::POLLIN != 0 {
             let r = unsafe { libc::read(STDIN, buf.as_mut_ptr().cast(), buf.len()) };
             if r > 0 {
                 let data = &buf[..r as usize];
-                for segment in trigger::scan(data) {
-                    match segment {
-                        // A trigger fires only because the user is in this window:
-                        // send the command to the daemon over the control socket.
-                        Segment::Trigger(t) => send_command(t.command_word()),
-                        // F12 debug aid: inject a hardcoded string (no trailing
-                        // Enter); the debug key itself is consumed.
-                        Segment::Forward(bytes) if bytes == DEBUG_KEY => {
-                            write_all_fd(master, &injection_bytes(DEBUG_STRING));
+                if streaming {
+                    // Suppressed: dispatch the trigger combos, drop everything else.
+                    for t in trigger::scan_suppressed(data) {
+                        send_command(t.command_word());
+                    }
+                } else {
+                    for segment in trigger::scan(data) {
+                        match segment {
+                            // A trigger fires only because the user is in this
+                            // window: send the command to the daemon.
+                            Segment::Trigger(t) => send_command(t.command_word()),
+                            // F12 debug aid: inject a hardcoded string (no trailing
+                            // Enter); the debug key itself is consumed.
+                            Segment::Forward(bytes) if bytes == DEBUG_KEY => {
+                                write_all_fd(master, &injection_bytes(DEBUG_STRING));
+                            }
+                            Segment::Forward(bytes) => write_all_fd(master, bytes),
                         }
-                        Segment::Forward(bytes) => write_all_fd(master, bytes),
                     }
                 }
             }
@@ -382,7 +403,9 @@ fn apply_frame(shared: &Arc<Mutex<Shared>>, line: &str) {
         Ok(Frame::State(s)) => {
             let mut sh = shared.lock().unwrap();
             // A new dictation begins on entering the streaming state — start its
-            // preview from an empty cursor so edit bytes stay in sync.
+            // preview from an empty cursor so edit bytes stay in sync, and suppress
+            // keystrokes for the duration. Leaving the state ends suppression.
+            sh.streaming = s == State::Streaming;
             if s == State::Streaming {
                 sh.cursor.reset();
             }

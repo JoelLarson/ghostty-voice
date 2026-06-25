@@ -150,4 +150,15 @@ mod tests {
         assert!(s.contains("recording"), "must paint the state token");
         assert!(s.ends_with("\x1b8"), "must restore the cursor last");
     }
+
+    #[test]
+    fn render_shows_the_streaming_state_so_a_live_dictation_is_visible() {
+        // While a streaming dictation is active (keystrokes suppressed), the strip
+        // must surface it so the user can see input is going to the live preview.
+        let s = String::from_utf8(render(24, "streaming")).unwrap();
+        assert!(
+            s.contains("streaming"),
+            "must paint the streaming state token"
+        );
+    }
 }
