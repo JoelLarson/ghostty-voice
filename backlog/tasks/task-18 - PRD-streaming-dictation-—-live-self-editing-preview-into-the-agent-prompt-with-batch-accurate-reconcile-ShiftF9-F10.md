@@ -7,6 +7,7 @@ status: To Do
 assignee:
   - '@Joel Larson'
 created_date: '2026-06-25 04:21'
+updated_date: '2026-06-25 04:36'
 labels:
   - prd
   - streaming
@@ -118,3 +119,26 @@ The spike is first because the two real risks — sustained decode cadence on on
 - [ ] #9 Each deep/extended module (streaming commit engine, window-PCM math, pty edit-bytes, trigger, protocol command/state/frames) has Chicago-style unit tests written test-first; the daemon streaming decoder loop has an integration test against the fake whisper-server asserting committed/tail evolution and the final reconcile
 - [ ] #10 A new ADR records streaming-preview + batch-reconcile as the conscious extension of ADR-0002; README/docs cover the new mode and the Shift+F9/F10 bindings; cargo test --workspace is green and clippy + fmt are clean
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+Implement streaming dictation across the 6 subtasks on branch `task-18-streaming` (branched from `main`).
+
+IMPORTANT context discovered: `main` does NOT contain the TASK-17 architecture refactor (no extracted `Recorder`/`Delivery`/`Capture`/`managed_child` modules — the daemon is still the monolithic `ghostty-voiced/src/main.rs`). Per the AFK goal we branch from `main`, so streaming is built on main's actual structure, honouring the CONTEXT.md domain vocabulary (Utterance, Transcript, Recorder one-mouth invariant, Delivery, Held-for-replay) and the one-mouth invariant *structurally* via the state machine, rather than depending on task-17's module extraction. Noted as a deviation-of-record for the final summary.
+
+End-state architecture (built incrementally, each slice green):
+- core `streaming` module: LocalAgreement-2 commit engine (pure word-list math) — slice 2.
+- core `window` module: bounded sliding-window PCM byte math — slice 4.
+- core `pty` additions: `edit_bytes` (backspace old tail + type committed + new tail, codepoint-counted) and `finalize_bytes` (erase whole buffer + type final text) — slices 2/3.
+- core `trigger`: Shift+F9 → `Trigger::Streaming` (VAD relinquishes the F9 slot; `Command::Vad` still reachable via ctl) — slice 1; keystroke-suppression split — slice 5.
+- core `protocol`: `Command::Streaming`, `State::Streaming`, `Frame::LiveEdit{committed,tail}`, `Frame::Finalize(text)` — slices 1/2/3.
+- core `config`: `[streaming]` table (window_seconds=15, beam_size=1, session_end_silence_seconds=10, silence_threshold_pct=VAD default) — slice 4.
+- core `machine`: Streaming transitions + Actions (StartStreaming/StopStreaming/DiscardStreaming) — slice 1.
+- io `audio`: `spawn_streaming_recorder` (sox, long trailing-silence auto-stop) + windowed-WAV builder — slices 1/4.
+- daemon: `StreamingSession` + self-paced `drive_streaming` decode loop (decode window → post_inference beam=1 → engine.observe → push live frame to active wrapper, ephemeral/bypassing the queue); on stop run the batch transcribe over the full WAV → Finalize frame through Delivery (bound-at-trigger, Held-for-replay) — slices 1/2/3.
+- talk-to wrapper: apply LiveEdit/Finalize frames via pure pty edit-bytes; suppress keystrokes while streaming; strip shows `streaming` — slices 2/3/5.
+- docs: new ADR extending ADR-0002; README/keybinding/CONTEXT updates — slice 6.
+
+Chicago TDD throughout: pure modules unit-tested with real word/byte lists; the daemon decode loop integration-tested against a stdlib fake whisper-server (transcribe.rs real-socket style), reconstructing the loop with the real core engine + real post_inference. Each slice: cargo test --workspace green, clippy clean, fmt clean, atomic commits. No task/slice IDs in source comments (CLAUDE.md) — reference ADR-0002 extension / CONTEXT concepts instead.
+<!-- SECTION:PLAN:END -->
