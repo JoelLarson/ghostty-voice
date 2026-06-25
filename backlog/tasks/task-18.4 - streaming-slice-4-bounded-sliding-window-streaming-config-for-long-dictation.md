@@ -3,11 +3,11 @@ id: TASK-18.4
 title: >-
   streaming slice 4: bounded sliding window + [streaming] config for long
   dictation
-status: In Progress
+status: Done
 assignee:
   - '@Joel Larson'
 created_date: '2026-06-25 04:28'
-updated_date: '2026-06-25 05:08'
+updated_date: '2026-06-25 05:13'
 labels:
   - streaming
   - talk-to
@@ -31,11 +31,11 @@ Decisions locked (defaults, all overridable in `config.toml`): `window_seconds=1
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Pure window-PCM math returns the last `window_seconds` of PCM from a committed offset, clamped to bytes present, for full and sub-window inputs (unit-tested)
-- [ ] #2 The daemon decode loop decodes only the bounded window; per-decode audio length stays bounded as the dictation grows (proven via the integration test with a long synthetic stream)
-- [ ] #3 A `[streaming]` config table is parsed with the locked defaults and is upgrade-tolerant (missing table → defaults)
-- [ ] #4 Committed audio drops out of the window so the stable prefix is never re-decoded
-- [ ] #5 `cargo test --workspace` green; clippy and fmt clean
+- [x] #1 #1 Pure window-PCM math returns the last `window_seconds` of PCM from a committed offset, clamped to bytes present, for full and sub-window inputs (unit-tested)
+- [x] #2 #2 The daemon decode loop decodes only the bounded window; per-decode audio length stays bounded as the dictation grows (proven via the integration test with a long synthetic stream)
+- [x] #3 #3 A `[streaming]` config table is parsed with the locked defaults and is upgrade-tolerant (missing table → defaults)
+- [x] #4 #4 Committed audio drops out of the window so the stable prefix is never re-decoded
+- [x] #5 #5 `cargo test --workspace` green; clippy and fmt clean
 
 ## Blocked by
 TASK-18.1
@@ -54,5 +54,25 @@ Keep long dictations cheap with a bounded sliding window + a [streaming] config 
 
 cargo test --workspace green; clippy + fmt clean; atomic commit.
 <!-- SECTION:PLAN:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Bounded the live decode to a sliding window and added the `[streaming]` config table.
+
+**Changes**
+- core `window.rs` (new): pure `window_range(total_data_len, committed_offset, window_len) -> (start, len)` — the last `window_len` bytes, never starting before `committed_offset`, sample-aligned, clamped to bytes present; `len ≤ window_len` always. Plus `seconds_to_bytes` for the 16 kHz mono s16 format. Unit-tested (full window, sub-window, committed exclusion, offset+bound composition, alignment, clamp).
+- io `audio.rs`: `write_window_wav(src, dest, window_bytes, committed_offset)` reuses the RIFF data-chunk scan (refactored to `wav_data_span`) to slice the window into a fresh canonical WAV, returning the window start. Real-file-I/O tests: a 60 s capture windows to exactly 15 s (bounded), a 2 s capture passes whole, a committed offset excludes the earlier audio.
+- core `config.rs`: a `[streaming]` table (`window_seconds=15`, `beam_size=1`, `session_end_silence_seconds=10`, `silence_threshold_pct=3`) with `serde(default)` + `deny_unknown_fields` — a missing table loads from defaults (upgrade-tolerant). Tested (defaults, missing-table, partial-override, full-config); added to `config.toml.example` with the corrected Shift+F9/F10 trigger note.
+- daemon `main.rs`: `drive_streaming` computes `window_bytes` from `config.streaming.window_seconds`, writes the windowed WAV to a per-session temp file (`*.window.wav`) and decodes that at `config.streaming.beam_size`, advancing a monotonic `window_offset` (committed audio drops out, never re-decoded); falls back to the whole capture if windowing fails. `start_streaming` arms sox with the `[streaming]` session-end-silence + threshold. The batch reconcile still decodes the complete capture. Window temp cleaned up on finalize/discard/teardown.
+
+**ACs**: #1 pure window math (unit tests); #2 bounded per-decode (io long-stream test — 60 s → 15 s) and the daemon decodes only the window; #3 `[streaming]` defaults + upgrade-tolerant (config tests); #4 committed audio drops out (window math + io test + monotonic offset); #5 green.
+
+`cargo test --workspace` green (core lib 235 tests), `cargo clippy --workspace --all-targets -- -D warnings` clean, `cargo fmt --check` clean.
+
+**Note**: the live lane keeps `committed_offset` aligned to the sliding-window left edge (not a word→audio timestamp map, which the JSON path doesn't expose) — so for dictations longer than the window the live preview is a rough draft of the trailing window, while the batch reconcile remains fully accurate (the locked "rough preview, batch-accurate reconcile" design).
+<!-- SECTION:FINAL_SUMMARY:END -->
+
+<!-- AC:END -->
 
 <!-- AC:END -->
