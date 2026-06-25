@@ -24,6 +24,11 @@ pub enum Command {
     Toggle,
     /// Start a hands-free VAD recording (sox auto-stops on first silence).
     Vad,
+    /// Start a hands-free **streaming dictation**: a live self-editing preview
+    /// flows into the active wrapper's prompt as you speak; a long trailing
+    /// silence (or a Shift+F10 force-stop) ends it and the batch-accurate
+    /// Transcript replaces the preview. The conscious extension of ADR-0002.
+    Streaming,
     /// Start a hands-free Continuous-mode session: short pauses cut clips
     /// that batch-transcribe in the background; a long silence ends the session
     /// and delivers the assembled transcript. `cancel` aborts the whole session.
@@ -62,6 +67,10 @@ pub enum State {
     Idle,
     Recording,
     Transcribing,
+    /// A streaming dictation is live: capture is running and the self-paced
+    /// decode loop is pushing a live preview into the active wrapper's prompt.
+    /// Keystrokes to the wrapped agent are suppressed while in this state.
+    Streaming,
 }
 
 /// A daemon reply.
@@ -99,6 +108,7 @@ impl Command {
         match lower.as_str() {
             "toggle" => Ok(Command::Toggle),
             "vad" => Ok(Command::Vad),
+            "streaming" => Ok(Command::Streaming),
             "continuous" => Ok(Command::Continuous),
             "cancel" => Ok(Command::Cancel),
             "status" => Ok(Command::Status),
@@ -122,6 +132,7 @@ impl State {
             State::Idle => "idle".to_owned(),
             State::Recording => "recording".to_owned(),
             State::Transcribing => "transcribing".to_owned(),
+            State::Streaming => "streaming".to_owned(),
         }
     }
 
@@ -149,6 +160,7 @@ impl State {
             ("idle", None) => Some(State::Idle),
             ("recording", None) => Some(State::Recording),
             ("transcribing", None) => Some(State::Transcribing),
+            ("streaming", None) => Some(State::Streaming),
             _ => None,
         }
     }
@@ -164,6 +176,7 @@ impl State {
             State::Idle => "idle".to_owned(),
             State::Recording => "recording".to_owned(),
             State::Transcribing => "transcribing".to_owned(),
+            State::Streaming => "streaming".to_owned(),
         }
     }
 }
@@ -182,6 +195,12 @@ pub enum Frame {
     Transcript(String),
     /// A daemon state change, for the wrapper's status strip.
     State(State),
+    /// A chunk of streaming-dictation **live preview** text to append into the
+    /// active wrapper's prompt as it is spoken (no trailing newline — the same
+    /// review-before-Enter invariant as a Transcript). The live lane is an
+    /// ephemeral rough preview; the batch-accurate Transcript reconciles it on
+    /// finalize. This append-only form is the conscious extension of ADR-0002.
+    Live(String),
 }
 
 impl Frame {
@@ -190,6 +209,7 @@ impl Frame {
         match self {
             Frame::Transcript(text) => format!("transcript {text}"),
             Frame::State(state) => format!("state {}", state.encode_token()),
+            Frame::Live(text) => format!("live {text}"),
         }
     }
 
@@ -201,6 +221,9 @@ impl Frame {
         let line = line.strip_suffix('\r').unwrap_or(line);
         if let Some(text) = line.strip_prefix("transcript ") {
             return Ok(Frame::Transcript(text.to_owned()));
+        }
+        if let Some(text) = line.strip_prefix("live ") {
+            return Ok(Frame::Live(text.to_owned()));
         }
         if let Some(token) = line.strip_prefix("state ") {
             return State::parse(token.trim())
@@ -285,6 +308,7 @@ mod tests {
     fn parses_each_command() {
         assert_eq!(Command::parse("toggle").unwrap(), Command::Toggle);
         assert_eq!(Command::parse("vad").unwrap(), Command::Vad);
+        assert_eq!(Command::parse("streaming").unwrap(), Command::Streaming);
         assert_eq!(Command::parse("continuous").unwrap(), Command::Continuous);
         assert_eq!(Command::parse("cancel").unwrap(), Command::Cancel);
         assert_eq!(Command::parse("status").unwrap(), Command::Status);
@@ -316,6 +340,7 @@ mod tests {
         assert_eq!(State::Idle.encode_token(), "idle");
         assert_eq!(State::Recording.encode_token(), "recording");
         assert_eq!(State::Transcribing.encode_token(), "transcribing");
+        assert_eq!(State::Streaming.encode_token(), "streaming");
     }
 
     #[test]
@@ -359,6 +384,7 @@ mod tests {
         assert_eq!(State::Idle.label(), "idle");
         assert_eq!(State::Recording.label(), "recording");
         assert_eq!(State::Transcribing.label(), "transcribing");
+        assert_eq!(State::Streaming.label(), "streaming");
     }
 
     #[test]
@@ -418,6 +444,7 @@ mod tests {
             State::Idle,
             State::Recording,
             State::Transcribing,
+            State::Streaming,
         ] {
             assert_eq!(State::parse(&state.encode_token()), Some(state));
         }
@@ -460,6 +487,23 @@ mod tests {
             Frame::parse("state downloading"),
             Ok(Frame::State(State::Downloading(None))),
         );
+    }
+
+    #[test]
+    fn live_preview_frame_round_trips_preserving_spacing() {
+        // The streaming live-preview append keeps its leading/internal spaces
+        // verbatim, so the bytes appended to the prompt are exactly the preview.
+        let frame = Frame::Live(" rebase onto main".to_owned());
+        assert_eq!(frame.encode(), "live  rebase onto main");
+        assert_eq!(Frame::parse(&frame.encode()), Ok(frame));
+    }
+
+    #[test]
+    fn a_transcript_whose_text_begins_with_live_stays_a_transcript() {
+        // The `transcript ` prefix is checked before `live `, so a Transcript that
+        // happens to begin with the word "live" is not mis-parsed as a Live frame.
+        let frame = Frame::Transcript("live wire the handler".to_owned());
+        assert_eq!(Frame::parse(&frame.encode()), Ok(frame));
     }
 
     #[test]

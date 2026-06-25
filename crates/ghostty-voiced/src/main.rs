@@ -60,6 +60,13 @@ struct Daemon {
     /// Monotonically incremented each time a continuous session starts, so a
     /// session's driver task can tell it has been superseded/cancelled and stop.
     continuous_gen: u64,
+    /// The active streaming-dictation session, if any. Like a continuous session
+    /// the recorder/`current_wav` machinery is bypassed: `sox` captures into one
+    /// growing WAV and the self-paced decode loop owns the live preview.
+    streaming: Option<StreamingSession>,
+    /// Monotonically incremented each time a streaming dictation starts, so its
+    /// driver task can tell it has been superseded/cancelled/finalized and stop.
+    streaming_gen: u64,
     /// The active **Delivery sink** tracker (IDEAS.md #4): at most one
     /// `talk-to` **wrapper sink** is active at a time; with none registered there
     /// is no active sink and deliveries are held for replay.
@@ -92,6 +99,31 @@ struct ContinuousSession {
     /// When the latest clip last advanced — the session-end-silence countdown
     /// is measured from here (no new clip for `session_end_silence` ⇒ end).
     last_progress: Instant,
+}
+
+/// State for one in-flight streaming-dictation session.
+///
+/// The live preview lane is **ephemeral**: each decode of the growing WAV is
+/// pushed to the wrapper that was active **at trigger time** (bound here), never
+/// re-routed and never entering the record-order delivery queue. On finalize the
+/// batch-accurate Transcript flows through the normal [`DeliveryQueue`] against
+/// this same trigger-time binding (Held-for-replay if that wrapper has died).
+struct StreamingSession {
+    /// This session's generation; its driver task stops once it no longer matches
+    /// `Daemon::streaming_gen` (a cancel/finalize/supersede retired it).
+    generation: u64,
+    /// The single growing capture WAV (`sox` writes it; the decode loop reads it).
+    wav: PathBuf,
+    /// The sox child; SIGINT-stopped on a Shift+F10 force-stop or cancel, or it
+    /// self-terminates on the long session-end silence.
+    recorder: Option<RecorderChild>,
+    /// The **Delivery sink** bound at trigger time — where the live preview is
+    /// pushed and the final Transcript is routed (Held-for-replay if it dies).
+    bound: Option<SinkId>,
+    /// How many whitespace-split words of the running hypothesis have already been
+    /// pushed as live preview. The append-only preview pushes only the new tail
+    /// each decode (the rough-preview extension of ADR-0002).
+    appended_words: usize,
 }
 
 impl Daemon {
@@ -147,6 +179,8 @@ async fn main() -> Result<()> {
         draining: false,
         continuous: None,
         continuous_gen: 0,
+        streaming: None,
+        streaming_gen: 0,
         sinks: SinkRegistry::new(),
         sink_conns: HashMap::new(),
         bindings: HashMap::new(),
@@ -437,6 +471,12 @@ async fn teardown(daemon: &Arc<Mutex<Daemon>>) {
         }
         let _ = std::fs::remove_dir_all(&session.dir);
     }
+    if let Some(mut session) = d.streaming.take() {
+        if let Some(mut child) = session.recorder.take() {
+            let _ = ghostty_voice_io::audio::stop_recorder(&mut child);
+        }
+        let _ = std::fs::remove_file(&session.wav);
+    }
     if let Some(mut child) = d.whisper.take() {
         let _ = child.start_kill();
     }
@@ -639,6 +679,23 @@ async fn perform(d: &mut Daemon, daemon: &Arc<Mutex<Daemon>>, action: Action) ->
         }
         Action::StartContinuous => {
             start_continuous(d, daemon)?;
+            Ok(())
+        }
+        Action::StartStreaming => {
+            start_streaming(d, daemon)?;
+            Ok(())
+        }
+        Action::StopStreaming => {
+            // Shift+F10 force-stop: finalize now. Spawned so the daemon lock is
+            // released for the batch reconcile; the generation guard makes the
+            // decode loop retire without double-delivering.
+            if let Some(s) = d.streaming.as_ref() {
+                tokio::spawn(finalize_streaming(daemon.clone(), s.generation));
+            }
+            Ok(())
+        }
+        Action::DiscardStreaming => {
+            discard_streaming(d);
             Ok(())
         }
         Action::DiscardRecording => {
@@ -945,6 +1002,261 @@ async fn end_continuous(
     };
     info!("continuous session {generation}: delivering assembled transcript (utterance {seq})");
     drain_queue(daemon).await;
+}
+
+// ---- streaming dictation ---------------------------------------------------
+
+/// The live-lane decoder beam width. A beam of 1 keeps each self-paced decode
+/// cheap — the live preview is a rough draft that the batch reconcile makes
+/// accurate (the conscious extension of ADR-0002). Lifted into the `[streaming]`
+/// config in a later slice.
+const LIVE_LANE_BEAM_SIZE: u32 = 1;
+
+/// Start a streaming dictation: capture into one growing WAV (sox auto-stops on
+/// the long session-end silence) and spawn the self-paced decode loop that pushes
+/// a live preview into the trigger-time-bound wrapper. The state machine only
+/// reaches here from a free recorder; the explicit guard backstops the async race
+/// where a force-stop's finalize is still draining (one-mouth invariant).
+fn start_streaming(d: &mut Daemon, daemon: &Arc<Mutex<Daemon>>) -> Result<()> {
+    if d.streaming.is_some() || d.recorder.is_some() || d.continuous.is_some() {
+        anyhow::bail!("the recorder is busy — refusing a second concurrent capture");
+    }
+    let wav = fresh_wav_path();
+    let child = ghostty_voice_io::audio::spawn_streaming_recorder(
+        &d.config.audio.device,
+        &wav,
+        d.config.audio.session_end_silence_seconds,
+        d.config.audio.vad_threshold_pct,
+    )?;
+    d.streaming_gen += 1;
+    let generation = d.streaming_gen;
+    // Bind the target sink NOW (trigger time), as every other mode does — the live
+    // preview pushes here and the final Transcript routes here (Held if it dies).
+    let bound = d.sinks.active();
+    d.streaming = Some(StreamingSession {
+        generation,
+        wav,
+        recorder: Some(child),
+        bound,
+        appended_words: 0,
+    });
+    play_start_cue(&d.config);
+    info!("streaming dictation {generation} started");
+    arm_streaming_cap(
+        daemon.clone(),
+        generation,
+        d.config.audio.max_recording_seconds,
+    );
+    tokio::spawn(drive_streaming(daemon.clone(), generation));
+    Ok(())
+}
+
+/// Drive one streaming dictation: self-paced, decode the growing WAV via the
+/// single existing whisper-server (live-lane `beam_size=1`) and push the new
+/// preview text to the bound wrapper, looping immediately on each decode's return
+/// (no second model, no latency gate). The dictation ends when sox exits — on the
+/// long session-end silence or a force-stop/cancel SIGINT — at which point the
+/// batch-accurate reconcile finalizes and delivers. Retires immediately if the
+/// session is cancelled (generation bumped) or the daemon shuts down.
+async fn drive_streaming(daemon: Arc<Mutex<Daemon>>, generation: u64) {
+    loop {
+        let (config, wav, sox_running, live_sender) = {
+            let mut d = daemon.lock().await;
+            if d.shutting_down {
+                return;
+            }
+            // Read the session fields first, dropping its mutable borrow before
+            // consulting the sink registry.
+            let (wav, bound, sox_running) = {
+                let Some(s) = d.streaming.as_mut() else {
+                    return; // finalized/cancelled elsewhere
+                };
+                if s.generation != generation {
+                    return; // superseded
+                }
+                let sox_running = match s.recorder.as_mut() {
+                    Some(child) => matches!(child.try_wait(), Ok(None)),
+                    None => false,
+                };
+                (s.wav.clone(), s.bound, sox_running)
+            };
+            // The live lane is ephemeral: push only to the trigger-time-bound
+            // wrapper while it is still live. No bound/dead wrapper ⇒ the preview
+            // no-ops (the final Transcript is still Held-for-replay on finalize).
+            let live_sender = match bound {
+                Some(id) if d.sinks.is_live(id) => d.sink_conns.get(&id).cloned(),
+                _ => None,
+            };
+            (d.config.clone(), wav, sox_running, live_sender)
+        };
+
+        // Decode the growing capture (the whole file this slice; a bounded sliding
+        // window comes later) once it carries at least the minimum audio.
+        let min_duration = Duration::from_secs_f64(config.audio.min_duration_seconds);
+        let audio = ghostty_voice_io::audio::wav_duration(&wav).unwrap_or(Duration::ZERO);
+        if audio >= min_duration
+            && let Some(text) = decode_live(&config, &wav).await
+        {
+            push_live_preview(&daemon, generation, &text, live_sender.as_ref()).await;
+        }
+
+        if !sox_running {
+            // sox finished (silence auto-stop or an early SIGINT) — reconcile.
+            finalize_streaming(daemon.clone(), generation).await;
+            return;
+        }
+        // Self-paced: the decode round-trip paces the loop; a short yield avoids a
+        // busy spin while the capture is still too short to decode.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// Decode the current capture on the live lane: a cheap `beam_size=1` pass with
+/// no `initial_prompt` (the live preview shows raw Whisper text; corrections are
+/// applied only in the batch reconcile). Returns the raw hypothesis text, or
+/// `None` if the server was unreachable or returned nothing — the loop simply
+/// tries again on the next pass (self-paced, lagging gracefully on a busy GPU).
+async fn decode_live(config: &Config, wav: &Path) -> Option<String> {
+    let params = ghostty_voice_io::transcribe::InferenceParams {
+        beam_size: LIVE_LANE_BEAM_SIZE,
+        temperature: config.whisper.temperature,
+        initial_prompt: String::new(),
+        prompt_truncated: false,
+    };
+    let host = config.whisper.host.clone();
+    let port = config.whisper.port;
+    let w = wav.to_path_buf();
+    let result = tokio::task::spawn_blocking(move || {
+        ghostty_voice_io::transcribe::post_inference(&host, port, &w, &params)
+    })
+    .await;
+    match result {
+        Ok(Ok(body)) => parse_transcript(&body).ok().filter(|t| !t.is_empty()),
+        Ok(Err(e)) => {
+            warn!("streaming live decode failed (will retry on the next pass): {e}");
+            None
+        }
+        Err(e) => {
+            warn!("streaming live decode task failed: {e}");
+            None
+        }
+    }
+}
+
+/// Push the newly-grown tail of `text` as a live-preview append to the bound
+/// wrapper. Append-only this slice: only the words past what was already pushed
+/// are sent (a leading space joins them to the existing preview), so the prompt
+/// grows without re-typing. A hypothesis that shrank pushes nothing.
+async fn push_live_preview(
+    daemon: &Arc<Mutex<Daemon>>,
+    generation: u64,
+    text: &str,
+    sender: Option<&mpsc::UnboundedSender<String>>,
+) {
+    let delta = {
+        let mut d = daemon.lock().await;
+        let Some(s) = d.streaming.as_mut() else {
+            return;
+        };
+        if s.generation != generation {
+            return;
+        }
+        let words: Vec<&str> = text.split_whitespace().collect();
+        let start = s.appended_words.min(words.len());
+        let new_words = &words[start..];
+        if new_words.is_empty() {
+            return;
+        }
+        s.appended_words = words.len();
+        let joined = new_words.join(" ");
+        if start == 0 {
+            joined
+        } else {
+            format!(" {joined}")
+        }
+    };
+    if let Some(tx) = sender {
+        let _ = tx.send(format!("{}\n", Frame::Live(delta).encode()));
+    }
+}
+
+/// Finalize a streaming dictation: atomically take the session (so a force-stop
+/// and the hands-free silence path can't both deliver — the generation guard
+/// lets exactly one win), stop sox, return to Idle, then run the **batch-accurate
+/// reconcile** — the full-utterance transcription (beam-8 + initial_prompt +
+/// corrections) over the complete WAV — and deliver it through the Delivery queue
+/// against the trigger-time binding (Held-for-replay if that wrapper has died).
+async fn finalize_streaming(daemon: Arc<Mutex<Daemon>>, generation: u64) {
+    let (config, wav, bound) = {
+        let mut d = daemon.lock().await;
+        match d.streaming.as_ref() {
+            Some(s) if s.generation == generation => {}
+            _ => return, // already finalized/cancelled/superseded
+        }
+        let mut session = d.streaming.take().expect("checked present above");
+        if let Some(mut child) = session.recorder.take() {
+            let _ = ghostty_voice_io::audio::stop_recorder(&mut child);
+        }
+        if d.state == State::Streaming {
+            d.set_state(State::Idle);
+        }
+        (d.config.clone(), session.wav, session.bound)
+    };
+    play_stop_cue(&config);
+
+    match transcribe_with_retry(&daemon, &config, &wav).await {
+        Ok(Some(text)) => {
+            let seq = {
+                let mut d = daemon.lock().await;
+                let seq = d.queue.enqueue();
+                d.bindings.insert(seq, bound);
+                d.queue.set_ready(seq, text);
+                seq
+            };
+            info!("streaming {generation}: delivering reconciled Transcript (utterance {seq})");
+            drain_queue(&daemon).await;
+        }
+        Ok(None) => info!("streaming {generation}: no speech — nothing delivered"),
+        Err(e) => {
+            error!("streaming {generation}: finalize transcription failed: {e}");
+            notify("ghostty-voice: streaming finalize failed — recording kept, re-speak");
+        }
+    }
+    let _ = std::fs::remove_file(&wav);
+}
+
+/// Abort the active streaming dictation (`cancel`): take the session, retire its
+/// driver task, stop sox, and bin the capture — the live preview is abandoned and
+/// nothing is delivered.
+fn discard_streaming(d: &mut Daemon) {
+    if let Some(mut session) = d.streaming.take() {
+        d.streaming_gen += 1; // retire the driver task
+        if let Some(mut child) = session.recorder.take() {
+            let _ = ghostty_voice_io::audio::stop_recorder(&mut child);
+        }
+        let _ = std::fs::remove_file(&session.wav);
+        info!("streaming dictation cancelled — discarded");
+    }
+}
+
+/// Backstop a never-speak streaming hang: if the session is still active after
+/// `seconds` (sox blocked waiting for speech that never rose above threshold),
+/// finalize it. Mirrors the batch recorder's runaway cap.
+fn arm_streaming_cap(daemon: Arc<Mutex<Daemon>>, generation: u64, seconds: u64) {
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(seconds)).await;
+        let still_active = {
+            let d = daemon.lock().await;
+            d.streaming
+                .as_ref()
+                .is_some_and(|s| s.generation == generation)
+        };
+        if still_active {
+            warn!("streaming hit the time cap — finalizing");
+            notify("ghostty-voice: streaming hit the time cap — finalizing");
+            finalize_streaming(daemon, generation).await;
+        }
+    });
 }
 
 /// Stop the recorder, cache the WAV, enqueue the utterance with its freshness

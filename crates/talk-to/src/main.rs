@@ -381,6 +381,16 @@ fn apply_frame(shared: &Arc<Mutex<Shared>>, line: &str) {
                 .pending_inject
                 .extend_from_slice(&injection_bytes(&text));
         }
+        // A streaming live-preview chunk is appended into the prompt exactly like
+        // a Transcript — no trailing newline (review-before-Enter). The live lane
+        // is a rough preview; the batch Transcript reconciles it on finalize.
+        Ok(Frame::Live(text)) => {
+            shared
+                .lock()
+                .unwrap()
+                .pending_inject
+                .extend_from_slice(&injection_bytes(&text));
+        }
         Err(_) => {} // ignore frames we don't understand
     }
 }

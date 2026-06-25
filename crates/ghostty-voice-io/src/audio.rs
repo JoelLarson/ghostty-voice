@@ -41,6 +41,35 @@ pub fn spawn_vad_recorder(
     silence_seconds: f32,
     threshold_pct: u32,
 ) -> Result<Child> {
+    spawn_silence_stopped_recorder(device, out, silence_seconds, threshold_pct)
+}
+
+/// Start a hands-free **streaming dictation** capture from `device` into `out`
+/// using `sox`. Identical WAV contract and trailing-silence auto-stop mechanism
+/// as [`spawn_vad_recorder`], but armed with the long `session_end_silence_seconds`
+/// so short pauses mid-dictation are tolerated and only a sustained silence ends
+/// the session — the hands-free end of a streaming dictation. The caller tracks
+/// the [`Child`] so a Shift+F10 force-stop or `cancel` can SIGINT it early; the
+/// daemon's self-paced decode loop reads the growing WAV while it records.
+pub fn spawn_streaming_recorder(
+    device: &str,
+    out: &Path,
+    session_end_silence_seconds: f32,
+    threshold_pct: u32,
+) -> Result<Child> {
+    spawn_silence_stopped_recorder(device, out, session_end_silence_seconds, threshold_pct)
+}
+
+/// The shared `sox` trailing-silence-auto-stop capture used by both the VAD
+/// recorder (short first-silence stop) and the streaming recorder (long
+/// session-end-silence stop) — same WAV contract, differing only in the silence
+/// duration each arms.
+fn spawn_silence_stopped_recorder(
+    device: &str,
+    out: &Path,
+    silence_seconds: f32,
+    threshold_pct: u32,
+) -> Result<Child> {
     let argv = ghostty_voice_core::vad::record_args(
         &out.to_string_lossy(),
         silence_seconds,

@@ -6,10 +6,13 @@
 //! sequences, **consuming** them (they are not forwarded to the wrapped agent)
 //! and turning them into daemon commands sent over the control socket:
 //!
-//! - **Shift+F10** (`ESC [ 21 ; 2 ~`) → [`Trigger::Toggle`] — start/stop a batch
-//!   recording.
-//! - **Shift+F9** (`ESC [ 20 ; 2 ~`) → [`Trigger::Vad`] — start a hands-free VAD
-//!   recording (auto-stops on silence).
+//! - **Shift+F10** (`ESC [ 21 ; 2 ~`) → [`Trigger::Toggle`] — stop whatever is
+//!   running (a streaming dictation force-stops and finalizes), else start/stop a
+//!   batch recording.
+//! - **Shift+F9** (`ESC [ 20 ; 2 ~`) → [`Trigger::Streaming`] — start a hands-free
+//!   streaming dictation (live self-editing preview, auto-stops on a long
+//!   silence). Hands-free **VAD** batch mode relinquishes this start slot but stays
+//!   reachable via `ghostty-voice-ctl vad`.
 //!
 //! A terminal reports key *presses* only — there is no key-release or hold
 //! timing — so these are discrete commands, not the tap/hold/PTT gestures the old
@@ -24,10 +27,11 @@
 /// A recognized in-terminal trigger.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Trigger {
-    /// Shift+F10 — toggle a batch recording on/off.
+    /// Shift+F10 — stop whatever is running (a streaming dictation force-stops
+    /// and finalizes), else toggle a batch recording on/off.
     Toggle,
-    /// Shift+F9 — start a hands-free VAD recording.
-    Vad,
+    /// Shift+F9 — start a hands-free streaming dictation (live preview).
+    Streaming,
 }
 
 impl Trigger {
@@ -35,7 +39,7 @@ impl Trigger {
     pub fn command_word(self) -> &'static str {
         match self {
             Trigger::Toggle => "toggle",
-            Trigger::Vad => "vad",
+            Trigger::Streaming => "streaming",
         }
     }
 }
@@ -47,7 +51,7 @@ const SHIFT_F9: &[u8] = b"\x1b[20;2~";
 
 /// The trigger combos in match order, longest-first is not needed (both are the
 /// same length and share no prefix that would mis-bind).
-const COMBOS: &[(&[u8], Trigger)] = &[(SHIFT_F10, Trigger::Toggle), (SHIFT_F9, Trigger::Vad)];
+const COMBOS: &[(&[u8], Trigger)] = &[(SHIFT_F10, Trigger::Toggle), (SHIFT_F9, Trigger::Streaming)];
 
 /// One piece of split proxy input: bytes to forward to the wrapped agent's PTY,
 /// or a recognized trigger to dispatch to the daemon (and *not* forward).
@@ -99,14 +103,19 @@ mod tests {
     }
 
     #[test]
-    fn shift_f9_alone_is_a_vad_trigger_and_is_consumed() {
-        assert_eq!(scan(b"\x1b[20;2~"), vec![Segment::Trigger(Trigger::Vad)]);
+    fn shift_f9_alone_is_a_streaming_trigger_and_is_consumed() {
+        // VAD relinquished the F9 start slot to streaming dictation; Shift+F9 now
+        // starts a streaming dictation (VAD stays reachable via the ctl CLI).
+        assert_eq!(
+            scan(b"\x1b[20;2~"),
+            vec![Segment::Trigger(Trigger::Streaming)]
+        );
     }
 
     #[test]
     fn the_triggers_map_to_their_wire_command_words() {
         assert_eq!(Trigger::Toggle.command_word(), "toggle");
-        assert_eq!(Trigger::Vad.command_word(), "vad");
+        assert_eq!(Trigger::Streaming.command_word(), "streaming");
     }
 
     #[test]
@@ -153,7 +162,7 @@ mod tests {
             scan(b"\x1b[21;2~\x1b[20;2~"),
             vec![
                 Segment::Trigger(Trigger::Toggle),
-                Segment::Trigger(Trigger::Vad),
+                Segment::Trigger(Trigger::Streaming),
             ],
         );
     }
