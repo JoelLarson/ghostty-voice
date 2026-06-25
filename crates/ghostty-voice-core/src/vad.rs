@@ -7,7 +7,8 @@
 
 /// The `sox` `silence` effect: trim leading silence, then stop after
 /// `silence_seconds` below `threshold_pct`% — e.g. `silence 1 0.1 3% 1 2.0 3%`.
-pub fn silence_effect(silence_seconds: f32, threshold_pct: u32) -> Vec<String> {
+/// `threshold_pct` may be fractional (e.g. `0.3`) for a quiet mic.
+pub fn silence_effect(silence_seconds: f32, threshold_pct: f32) -> Vec<String> {
     let threshold = format!("{threshold_pct}%");
     vec![
         "silence".to_owned(),
@@ -21,7 +22,7 @@ pub fn silence_effect(silence_seconds: f32, threshold_pct: u32) -> Vec<String> {
 }
 
 /// Full `sox` argv to record a 16 kHz mono s16 WAV that auto-stops on silence.
-pub fn record_args(out: &str, silence_seconds: f32, threshold_pct: u32) -> Vec<String> {
+pub fn record_args(out: &str, silence_seconds: f32, threshold_pct: f32) -> Vec<String> {
     let mut argv = record_prefix(out);
     argv.extend(silence_effect(silence_seconds, threshold_pct));
     argv
@@ -33,7 +34,7 @@ pub fn record_args(out: &str, silence_seconds: f32, threshold_pct: u32) -> Vec<S
 /// one long capture sprayed into silence-bounded clips. The daemon watches the
 /// session dir, transcribes each finalized clip, and ends the session itself on
 /// the long session-end silence (sox's own per-clip trim is just the cut point).
-pub fn continuous_split_effect(clip_pause_seconds: f32, threshold_pct: u32) -> Vec<String> {
+pub fn continuous_split_effect(clip_pause_seconds: f32, threshold_pct: f32) -> Vec<String> {
     let mut effect = silence_effect(clip_pause_seconds, threshold_pct);
     effect.extend([
         ":".to_owned(),
@@ -51,7 +52,7 @@ pub fn continuous_split_effect(clip_pause_seconds: f32, threshold_pct: u32) -> V
 pub fn continuous_record_args(
     out_template: &str,
     clip_pause_seconds: f32,
-    threshold_pct: u32,
+    threshold_pct: f32,
 ) -> Vec<String> {
     let mut argv = record_prefix(out_template);
     argv.extend(continuous_split_effect(clip_pause_seconds, threshold_pct));
@@ -83,21 +84,29 @@ mod tests {
     #[test]
     fn silence_effect_uses_threshold_and_duration() {
         assert_eq!(
-            silence_effect(2.0, 3),
+            silence_effect(2.0, 3.0),
             vec!["silence", "1", "0.1", "3%", "1", "2", "3%"],
         );
     }
 
     #[test]
     fn threshold_is_rendered_as_a_percentage() {
-        let effect = silence_effect(1.5, 5);
+        let effect = silence_effect(1.5, 5.0);
         assert!(effect.contains(&"5%".to_owned()));
         assert!(effect.contains(&"1.5".to_owned()));
     }
 
     #[test]
+    fn a_fractional_threshold_renders_as_a_decimal_percent() {
+        // A quiet mic whose speech peaks below 1% needs a sub-1% threshold; sox
+        // accepts a decimal percent, so `0.3` must render as `0.3%`.
+        let effect = silence_effect(2.0, 0.3);
+        assert!(effect.contains(&"0.3%".to_owned()), "got {effect:?}");
+    }
+
+    #[test]
     fn record_args_target_the_output_and_end_with_silence() {
-        let argv = record_args("/tmp/x.wav", 2.0, 3);
+        let argv = record_args("/tmp/x.wav", 2.0, 3.0);
         assert!(argv.contains(&"/tmp/x.wav".to_owned()));
         assert_eq!(argv[argv.len() - 7], "silence");
     }
@@ -109,7 +118,7 @@ mod tests {
         // Continuous mode: stop the current clip after `clip_pause` of silence,
         // then `: newfile : restart` so sox opens the next numbered clip and
         // keeps recording the same session.
-        let effect = continuous_split_effect(1.0, 3);
+        let effect = continuous_split_effect(1.0, 3.0);
         assert_eq!(
             effect,
             vec![
@@ -123,7 +132,7 @@ mod tests {
         // sox expands `%n` in the output path to the clip index, so a session
         // dir gets clip-1.wav, clip-2.wav, ... The argv records from the default
         // device in the WAV contract and ends with the split effect.
-        let argv = continuous_record_args("/tmp/sess/clip-%n.wav", 1.0, 3);
+        let argv = continuous_record_args("/tmp/sess/clip-%n.wav", 1.0, 3.0);
         assert!(argv.contains(&"/tmp/sess/clip-%n.wav".to_owned()));
         assert_eq!(argv[argv.len() - 11], "silence");
         assert_eq!(argv[argv.len() - 3], "newfile");

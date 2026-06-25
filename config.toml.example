@@ -34,6 +34,9 @@ max_recording_seconds = 900
 min_duration_seconds = 0.3
 # VAD mode (Stop key held): sox auto-stops after this many seconds of trailing
 # silence below vad_threshold_pct (% of full scale). Tune to your mic and room.
+# May be fractional (e.g. 0.3) for a quiet mic whose speech peaks below 1% — if
+# `toggle` transcribes but VAD/streaming/continuous report "no speech", your
+# input is below this threshold; lower it (or raise your mic gain).
 vad_silence_seconds = 2.0
 vad_threshold_pct = 3
 # Continuous mode: talk continuously and clips are cut at short
@@ -60,7 +63,8 @@ min_clip_seconds = 2.0
 #   session_end_silence_seconds - a trailing silence this long ends the dictation
 #                                 hands-free (~10 s; tolerates short pauses)
 #   silence_threshold_pct       - % of full scale below which audio counts as
-#                                 silence (defaults to the VAD threshold)
+#                                 silence (defaults to the VAD threshold; may be
+#                                 fractional like 0.3 for a quiet mic)
 window_seconds = 15.0
 beam_size = 1
 session_end_silence_seconds = 10.0

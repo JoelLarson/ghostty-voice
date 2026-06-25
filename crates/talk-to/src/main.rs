@@ -113,7 +113,12 @@ fn main() -> Result<()> {
     set_scroll_region(child_ws.ws_row);
     paint_strip(strip_row, "idle");
 
-    let status = proxy_loop(master, pid, strip_row, shared);
+    // Optional key diagnostics: `GHOSTTY_VOICE_KEYLOG=1 talk-to <cmd>` logs the
+    // raw stdin bytes (caret notation) to the talk-to log, so the exact escape
+    // sequence a wrapped TUI's keyboard mode produces for a trigger key can be
+    // captured and added to the recognizer.
+    let keylog = std::env::var_os("GHOSTTY_VOICE_KEYLOG").is_some();
+    let status = proxy_loop(master, pid, strip_row, shared, keylog);
 
     // Restore the full-screen scroll region and the terminal before exiting.
     reset_scroll_region();
@@ -139,6 +144,7 @@ fn proxy_loop(
     pid: libc::pid_t,
     mut strip_row: u16,
     shared: Arc<Mutex<Shared>>,
+    keylog: bool,
 ) -> i32 {
     // The last state token we painted, so we only repaint the strip on a change.
     let mut painted_state = "idle".to_owned();
@@ -207,6 +213,9 @@ fn proxy_loop(
             let r = unsafe { libc::read(STDIN, buf.as_mut_ptr().cast(), buf.len()) };
             if r > 0 {
                 let data = &buf[..r as usize];
+                if keylog {
+                    log_keys(data);
+                }
                 if streaming {
                     // Suppressed: dispatch the trigger combos, drop everything else.
                     for t in trigger::scan_suppressed(data) {
@@ -457,6 +466,26 @@ fn log_link(reason: &str) {
     {
         let _ = writeln!(file, "talk-to: {reason}");
     }
+}
+
+/// Log raw stdin `bytes` in caret notation (like `cat -v`) to the talk-to log,
+/// for `GHOSTTY_VOICE_KEYLOG=1` key diagnostics. `ESC` → `^[`, other control
+/// bytes → `^X`, `DEL` → `^?`, printable bytes verbatim — so the exact escape
+/// sequence a wrapped TUI's keyboard mode produces is captured for the recognizer.
+fn log_keys(bytes: &[u8]) {
+    let mut rendered = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        match b {
+            0x1b => rendered.push_str("^["),
+            0x7f => rendered.push_str("^?"),
+            0..=0x1f => {
+                rendered.push('^');
+                rendered.push((b + 0x40) as char);
+            }
+            _ => rendered.push(b as char),
+        }
+    }
+    log_link(&format!("keys: {rendered}"));
 }
 
 /// The talk-to log file: `$XDG_STATE_HOME/ghostty-voice/talk-to.log`, falling

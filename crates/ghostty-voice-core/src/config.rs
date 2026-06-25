@@ -8,6 +8,28 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+/// Deserialize a percentage that may be written as a TOML integer (`3`) or a
+/// float (`0.3`). The `sox` silence threshold is a percentage of full scale, and
+/// a quiet mic can need a *fractional* percent (e.g. a Scarlett at low gain whose
+/// speech peaks below 1%), so the field is an `f32` — but older configs (and the
+/// natural `3`) write a bare integer, which TOML types distinctly from `3.0`.
+/// Accept both so neither form makes the daemon refuse to start.
+fn de_percent<'de, D>(deserializer: D) -> Result<f32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum IntOrFloat {
+        Int(i64),
+        Float(f64),
+    }
+    Ok(match IntOrFloat::deserialize(deserializer)? {
+        IntOrFloat::Int(i) => i as f32,
+        IntOrFloat::Float(f) => f as f32,
+    })
+}
+
 /// Top-level configuration.
 #[derive(Debug, Clone, PartialEq, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -69,8 +91,10 @@ pub struct AudioConfig {
     /// after which `sox` self-terminates the recording. Real-mic tunable.
     pub vad_silence_seconds: f32,
     /// VAD mode: the `sox` `silence` threshold as a percentage of full
-    /// scale; audio below this counts as silence. Real-mic tunable.
-    pub vad_threshold_pct: u32,
+    /// scale; audio below this counts as silence. Real-mic tunable, and may be
+    /// fractional (e.g. `0.3`) for a quiet mic whose speech peaks below 1%.
+    #[serde(deserialize_with = "de_percent")]
+    pub vad_threshold_pct: f32,
     /// Recordings shorter than this are discarded (accidental blips type
     /// nothing). Default 0.3 s.
     pub min_duration_seconds: f64,
@@ -104,8 +128,10 @@ pub struct StreamingConfig {
     /// (~10 s) — tolerant of short mid-dictation pauses. `sox` auto-stops on it.
     pub session_end_silence_seconds: f32,
     /// The `sox` `silence` threshold as a percentage of full scale; audio below
-    /// this counts as silence. Defaults to the existing VAD threshold.
-    pub silence_threshold_pct: u32,
+    /// this counts as silence. Defaults to the existing VAD threshold. May be
+    /// fractional (e.g. `0.3`) for a quiet mic whose speech peaks below 1%.
+    #[serde(deserialize_with = "de_percent")]
+    pub silence_threshold_pct: f32,
 }
 
 impl Default for StreamingConfig {
@@ -114,7 +140,7 @@ impl Default for StreamingConfig {
             window_seconds: 15.0,
             beam_size: 1,
             session_end_silence_seconds: 10.0,
-            silence_threshold_pct: 3,
+            silence_threshold_pct: 3.0,
         }
     }
 }
@@ -170,7 +196,7 @@ impl Default for AudioConfig {
             max_recording_seconds: 900,
             min_duration_seconds: 0.3,
             vad_silence_seconds: 2.0,
-            vad_threshold_pct: 3,
+            vad_threshold_pct: 3.0,
             clip_cut_pause_seconds: 1.0,
             session_end_silence_seconds: 10.0,
             min_clip_seconds: 2.0,
@@ -266,7 +292,7 @@ mod tests {
         assert_eq!(cfg.audio.max_recording_seconds, 900);
         assert_eq!(cfg.audio.min_duration_seconds, 0.3);
         assert_eq!(cfg.audio.vad_silence_seconds, 2.0);
-        assert_eq!(cfg.audio.vad_threshold_pct, 3);
+        assert_eq!(cfg.audio.vad_threshold_pct, 3.0);
         assert_eq!(cfg.audio.clip_cut_pause_seconds, 1.0);
         assert_eq!(cfg.audio.session_end_silence_seconds, 10.0);
         assert_eq!(cfg.audio.min_clip_seconds, 2.0);
@@ -280,7 +306,28 @@ mod tests {
         assert_eq!(cfg.streaming.window_seconds, 15.0);
         assert_eq!(cfg.streaming.beam_size, 1);
         assert_eq!(cfg.streaming.session_end_silence_seconds, 10.0);
-        assert_eq!(cfg.streaming.silence_threshold_pct, 3);
+        assert_eq!(cfg.streaming.silence_threshold_pct, 3.0);
+    }
+
+    #[test]
+    fn silence_thresholds_accept_integer_and_fractional_percents() {
+        // A quiet mic (speech peaking below 1%) needs a fractional threshold; an
+        // existing config writes a bare integer. Both must parse — a bare integer
+        // is TOML-typed distinctly from a float, so this guards the lenient parse.
+        let cfg = Config::from_toml_str(
+            "[audio]\nvad_threshold_pct = 3\n\n[streaming]\nsilence_threshold_pct = 0.3\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.audio.vad_threshold_pct, 3.0); // integer form
+        assert_eq!(cfg.streaming.silence_threshold_pct, 0.3); // fractional form
+
+        // …and the reverse pairing parses too.
+        let cfg = Config::from_toml_str(
+            "[audio]\nvad_threshold_pct = 0.5\n\n[streaming]\nsilence_threshold_pct = 2\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.audio.vad_threshold_pct, 0.5);
+        assert_eq!(cfg.streaming.silence_threshold_pct, 2.0);
     }
 
     #[test]
@@ -365,7 +412,7 @@ silence_threshold_pct = 4
         assert_eq!(cfg.audio.max_recording_seconds, 600);
         assert_eq!(cfg.audio.min_duration_seconds, 0.5);
         assert_eq!(cfg.audio.vad_silence_seconds, 1.5);
-        assert_eq!(cfg.audio.vad_threshold_pct, 5);
+        assert_eq!(cfg.audio.vad_threshold_pct, 5.0);
         assert_eq!(cfg.audio.clip_cut_pause_seconds, 1.2);
         assert_eq!(cfg.audio.session_end_silence_seconds, 8.0);
         assert_eq!(cfg.audio.min_clip_seconds, 3.0);
@@ -382,7 +429,7 @@ silence_threshold_pct = 4
         assert_eq!(cfg.streaming.window_seconds, 18.0);
         assert_eq!(cfg.streaming.beam_size, 2);
         assert_eq!(cfg.streaming.session_end_silence_seconds, 9.0);
-        assert_eq!(cfg.streaming.silence_threshold_pct, 4);
+        assert_eq!(cfg.streaming.silence_threshold_pct, 4.0);
     }
 
     #[test]

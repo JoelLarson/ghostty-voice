@@ -39,7 +39,7 @@ pub fn spawn_vad_recorder(
     device: &str,
     out: &Path,
     silence_seconds: f32,
-    threshold_pct: u32,
+    threshold_pct: f32,
 ) -> Result<Child> {
     spawn_silence_stopped_recorder(device, out, silence_seconds, threshold_pct)
 }
@@ -55,7 +55,7 @@ pub fn spawn_streaming_recorder(
     device: &str,
     out: &Path,
     session_end_silence_seconds: f32,
-    threshold_pct: u32,
+    threshold_pct: f32,
 ) -> Result<Child> {
     spawn_silence_stopped_recorder(device, out, session_end_silence_seconds, threshold_pct)
 }
@@ -68,7 +68,7 @@ fn spawn_silence_stopped_recorder(
     device: &str,
     out: &Path,
     silence_seconds: f32,
-    threshold_pct: u32,
+    threshold_pct: f32,
 ) -> Result<Child> {
     let argv = ghostty_voice_core::vad::record_args(
         &out.to_string_lossy(),
@@ -98,7 +98,7 @@ pub fn spawn_continuous_recorder(
     device: &str,
     out_template: &Path,
     clip_pause_seconds: f32,
-    threshold_pct: u32,
+    threshold_pct: f32,
 ) -> Result<Child> {
     let argv = ghostty_voice_core::vad::continuous_record_args(
         &out_template.to_string_lossy(),
@@ -382,7 +382,7 @@ mod tests {
         assert!(full >= Duration::from_secs(3), "source should be ~3.5 s");
 
         // Apply the same trailing-silence trim the VAD recorder uses (2 s @ 3%).
-        let effect = ghostty_voice_core::vad::silence_effect(2.0, 3);
+        let effect = ghostty_voice_core::vad::silence_effect(2.0, 3.0);
         let status = Command::new("sox")
             .arg(&src)
             .arg(&out)
@@ -436,7 +436,7 @@ mod tests {
             .expect("sox synth silence");
         assert!(synth.success(), "sox synth failed");
 
-        let effect = ghostty_voice_core::vad::silence_effect(2.0, 3);
+        let effect = ghostty_voice_core::vad::silence_effect(2.0, 3.0);
         let status = Command::new("sox")
             .arg(&src)
             .arg(&out)
@@ -500,7 +500,7 @@ mod tests {
         // The exact continuous split effect: cut after 1 s of silence @ 3%,
         // newfile + restart. Output template uses %n for the clip index.
         let template = dir.join("clip-%n.wav");
-        let effect = ghostty_voice_core::vad::continuous_split_effect(1.0, 3);
+        let effect = ghostty_voice_core::vad::continuous_split_effect(1.0, 3.0);
         let status = Command::new("sox")
             .arg(&src)
             .arg(&template)
