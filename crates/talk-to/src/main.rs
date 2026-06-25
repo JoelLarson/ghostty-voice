@@ -23,8 +23,8 @@ use std::time::Duration;
 
 use anyhow::{Result, bail};
 use ghostty_voice_core::link::{LinkState, Registration, classify_first_line};
-use ghostty_voice_core::protocol::{Frame, PROTOCOL_VERSION};
-use ghostty_voice_core::pty::{PtyError, injection_bytes, split_command};
+use ghostty_voice_core::protocol::{Frame, PROTOCOL_VERSION, State};
+use ghostty_voice_core::pty::{PreviewCursor, PtyError, injection_bytes, split_command};
 use ghostty_voice_core::strip;
 use ghostty_voice_core::trigger::{self, Segment};
 
@@ -57,13 +57,18 @@ extern "C" fn on_sigwinch(_sig: libc::c_int) {
 #[derive(Default)]
 struct Shared {
     /// Latest token for the strip: the daemon's voice state (from `state` frames)
-    /// — `idle`, `recording`, `transcribing` — while cleanly registered, or a
-    /// [`LinkState`] token (`unreachable`/`rejected`/`dropped`) when the link to
-    /// the daemon is down, so the failure modes stay distinct.
+    /// — `idle`, `recording`, `transcribing`, `streaming` — while cleanly
+    /// registered, or a [`LinkState`] token (`unreachable`/`rejected`/`dropped`)
+    /// when the link to the daemon is down, so the failure modes stay distinct.
     state: String,
-    /// Transcript bytes waiting to be injected into the child PTY (from
-    /// `transcript` frames), already stripped of any trailing newline.
+    /// Bytes waiting to be written into the child PTY: a `transcript` frame's
+    /// injected Transcript (trailing newline already stripped) or a streaming
+    /// `live-edit` frame's erase-and-type preview revision.
     pending_inject: Vec<u8>,
+    /// Tracks the streaming live preview's stable/tail boundary so each `live-edit`
+    /// frame is turned into the right erase-and-type byte stream. Reset at the
+    /// start of each dictation (on entering the `streaming` state).
+    cursor: PreviewCursor,
 }
 
 fn main() -> Result<()> {
@@ -94,6 +99,7 @@ fn main() -> Result<()> {
     let shared = Arc::new(Mutex::new(Shared {
         state: "idle".to_owned(),
         pending_inject: Vec::new(),
+        cursor: PreviewCursor::new(),
     }));
     spawn_sink_client(shared.clone());
 
@@ -373,7 +379,15 @@ fn serve_link(shared: &Arc<Mutex<Shared>>, stream: UnixStream) {
 /// `transcript` frame queues bytes for the proxy loop to inject into the child.
 fn apply_frame(shared: &Arc<Mutex<Shared>>, line: &str) {
     match Frame::parse(line) {
-        Ok(Frame::State(s)) => set_shared_state(shared, &s.label()),
+        Ok(Frame::State(s)) => {
+            let mut sh = shared.lock().unwrap();
+            // A new dictation begins on entering the streaming state — start its
+            // preview from an empty cursor so edit bytes stay in sync.
+            if s == State::Streaming {
+                sh.cursor.reset();
+            }
+            sh.state = s.label();
+        }
         Ok(Frame::Transcript(text)) => {
             shared
                 .lock()
@@ -381,15 +395,13 @@ fn apply_frame(shared: &Arc<Mutex<Shared>>, line: &str) {
                 .pending_inject
                 .extend_from_slice(&injection_bytes(&text));
         }
-        // A streaming live-preview chunk is appended into the prompt exactly like
-        // a Transcript — no trailing newline (review-before-Enter). The live lane
-        // is a rough preview; the batch Transcript reconciles it on finalize.
-        Ok(Frame::Live(text)) => {
-            shared
-                .lock()
-                .unwrap()
-                .pending_inject
-                .extend_from_slice(&injection_bytes(&text));
+        // A streaming live-edit revises the preview in place: erase the previous
+        // tail, type the newly-committed text, then the new tail (no trailing
+        // newline — review-before-Enter). Settled words never flicker.
+        Ok(Frame::LiveEdit { committed, tail }) => {
+            let mut sh = shared.lock().unwrap();
+            let bytes = sh.cursor.apply_edit(&committed, &tail);
+            sh.pending_inject.extend_from_slice(&bytes);
         }
         Err(_) => {} // ignore frames we don't understand
     }

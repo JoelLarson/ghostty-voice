@@ -195,13 +195,21 @@ pub enum Frame {
     Transcript(String),
     /// A daemon state change, for the wrapper's status strip.
     State(State),
-    /// A chunk of streaming-dictation **live preview** text to append into the
-    /// active wrapper's prompt as it is spoken (no trailing newline — the same
-    /// review-before-Enter invariant as a Transcript). The live lane is an
-    /// ephemeral rough preview; the batch-accurate Transcript reconciles it on
-    /// finalize. This append-only form is the conscious extension of ADR-0002.
-    Live(String),
+    /// One streaming-dictation **live-edit**: revise the prompt's live preview in
+    /// place. `committed` is the newly-confirmed text to lock onto the stable
+    /// prefix; `tail` is the current unstable tail to (re)display. The wrapper
+    /// erases its previous tail, types `committed`, then types `tail` — settled
+    /// words never flicker. Both fields carry their joining spaces. The live lane
+    /// is an ephemeral rough preview reconciled by the batch Transcript on
+    /// finalize — the conscious extension of ADR-0002.
+    LiveEdit { committed: String, tail: String },
 }
+
+/// Separator between a [`Frame::LiveEdit`]'s `committed` and `tail` fields on the
+/// wire — ASCII Unit Separator. A normalized Transcript/tail never contains a
+/// control char, so this keeps the deliberately-dumb line protocol (no JSON yet)
+/// while carrying two space-bearing fields unambiguously.
+const LIVE_EDIT_SEP: char = '\u{1f}';
 
 impl Frame {
     /// Encode as a single wire line (no trailing newline; the caller adds it).
@@ -209,7 +217,9 @@ impl Frame {
         match self {
             Frame::Transcript(text) => format!("transcript {text}"),
             Frame::State(state) => format!("state {}", state.encode_token()),
-            Frame::Live(text) => format!("live {text}"),
+            Frame::LiveEdit { committed, tail } => {
+                format!("live-edit {committed}{LIVE_EDIT_SEP}{tail}")
+            }
         }
     }
 
@@ -222,8 +232,12 @@ impl Frame {
         if let Some(text) = line.strip_prefix("transcript ") {
             return Ok(Frame::Transcript(text.to_owned()));
         }
-        if let Some(text) = line.strip_prefix("live ") {
-            return Ok(Frame::Live(text.to_owned()));
+        if let Some(rest) = line.strip_prefix("live-edit ") {
+            let (committed, tail) = rest.split_once(LIVE_EDIT_SEP).unwrap_or((rest, ""));
+            return Ok(Frame::LiveEdit {
+                committed: committed.to_owned(),
+                tail: tail.to_owned(),
+            });
         }
         if let Some(token) = line.strip_prefix("state ") {
             return State::parse(token.trim())
@@ -490,19 +504,43 @@ mod tests {
     }
 
     #[test]
-    fn live_preview_frame_round_trips_preserving_spacing() {
-        // The streaming live-preview append keeps its leading/internal spaces
-        // verbatim, so the bytes appended to the prompt are exactly the preview.
-        let frame = Frame::Live(" rebase onto main".to_owned());
-        assert_eq!(frame.encode(), "live  rebase onto main");
+    fn live_edit_frame_round_trips_both_fields_preserving_spacing() {
+        // The two space-bearing fields survive the round trip exactly, so the
+        // wrapper erases and types precisely what the commit engine rendered.
+        let frame = Frame::LiveEdit {
+            committed: " onto".to_owned(),
+            tail: " main branch".to_owned(),
+        };
         assert_eq!(Frame::parse(&frame.encode()), Ok(frame));
     }
 
     #[test]
+    fn live_edit_frame_round_trips_with_empty_fields() {
+        // No new commit this decode (empty committed), or an empty tail once the
+        // utterance settles — both must round-trip.
+        for frame in [
+            Frame::LiveEdit {
+                committed: String::new(),
+                tail: "rebase".to_owned(),
+            },
+            Frame::LiveEdit {
+                committed: " main".to_owned(),
+                tail: String::new(),
+            },
+            Frame::LiveEdit {
+                committed: String::new(),
+                tail: String::new(),
+            },
+        ] {
+            assert_eq!(Frame::parse(&frame.encode()), Ok(frame));
+        }
+    }
+
+    #[test]
     fn a_transcript_whose_text_begins_with_live_stays_a_transcript() {
-        // The `transcript ` prefix is checked before `live `, so a Transcript that
-        // happens to begin with the word "live" is not mis-parsed as a Live frame.
-        let frame = Frame::Transcript("live wire the handler".to_owned());
+        // The `transcript ` prefix is checked before `live-edit `, so a Transcript
+        // that happens to begin with "live-edit" is not mis-parsed.
+        let frame = Frame::Transcript("live-edit the handler".to_owned());
         assert_eq!(Frame::parse(&frame.encode()), Ok(frame));
     }
 

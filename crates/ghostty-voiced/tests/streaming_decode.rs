@@ -2,9 +2,11 @@
 //! whisper-server.
 //!
 //! Reconstructs the real composition the daemon's `drive_streaming` +
-//! `finalize_streaming` rely on — successive `post_inference` round-trips on the
-//! live lane (`beam_size=1`, no `initial_prompt`), the real `parse_transcript`,
-//! the real `Frame::Live` append encoding, and on finalize the batch reconcile
+//! `finalize_streaming` and the wrapper's edit-application rely on — successive
+//! `post_inference` round-trips on the live lane (`beam_size=1`, no
+//! `initial_prompt`), the real `CommitEngine` (LocalAgreement-2), the real
+//! `Frame::LiveEdit` wire round-trip, the real `PreviewCursor` erase-and-type
+//! against a stand-in line editor, and on finalize the batch reconcile
 //! (`finalize_transcript` with the correction dictionary) routed through the real
 //! `SinkRegistry` + `DeliveryQueue` — with a test double only at the socket peer.
 //! No GPU, mic, or second model. Mirrors the real-socket style of `transcribe.rs`.
@@ -18,8 +20,10 @@ use std::time::Duration;
 
 use ghostty_voice_core::pipeline::finalize_transcript;
 use ghostty_voice_core::protocol::Frame;
+use ghostty_voice_core::pty::PreviewCursor;
 use ghostty_voice_core::queue::DeliveryQueue;
 use ghostty_voice_core::sink::{Route, SinkRegistry};
+use ghostty_voice_core::streaming::CommitEngine;
 use ghostty_voice_core::transcript::parse_transcript;
 use ghostty_voice_io::audio::wav_duration;
 use ghostty_voice_io::transcribe::{InferenceParams, post_inference};
@@ -47,9 +51,9 @@ fn write_wav(path: &Path, data_bytes: u32) {
     std::fs::write(path, w).unwrap();
 }
 
-/// Fake whisper-server that answers a *scripted sequence* of requests: request N
+/// Fake whisper-server answering a *scripted sequence* of requests: request N
 /// gets `bodies[N]`. The self-paced loop opens one connection per decode, so a
-/// growing hypothesis is just successive bodies, ending with the batch reconcile.
+/// growing/revised hypothesis is just successive bodies, ending with the reconcile.
 fn scripted_whisper(bodies: Vec<String>) -> (String, u16, thread::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
@@ -82,7 +86,6 @@ fn json(text: &str) -> String {
 }
 
 fn live_params() -> InferenceParams {
-    // The live lane: cheap beam, no initial_prompt — raw Whisper text.
     InferenceParams {
         beam_size: 1,
         temperature: 0.0,
@@ -92,7 +95,6 @@ fn live_params() -> InferenceParams {
 }
 
 fn batch_params() -> InferenceParams {
-    // The reconcile lane: the accuracy stack's wider beam.
     InferenceParams {
         beam_size: 8,
         temperature: 0.0,
@@ -117,39 +119,58 @@ fn tmp(name: &str) -> PathBuf {
 
 const MIN: Duration = Duration::from_millis(300);
 
-/// One live decode pass: POST the growing capture, parse the hypothesis, and
-/// return the append-only delta (the words past `appended`) as the wrapper would
-/// receive it — a leading space joins it to the existing preview. Returns the new
-/// `appended` count. Mirrors the daemon's `decode_live` + `push_live_preview`.
-fn live_pass(host: &str, port: u16, wav: &Path, appended: usize) -> (Option<Frame>, usize) {
-    let body = post_inference(host, port, wav, &live_params()).unwrap();
-    let text = parse_transcript(&body).unwrap();
-    let words: Vec<&str> = text.split_whitespace().collect();
-    let start = appended.min(words.len());
-    let new = &words[start..];
-    if new.is_empty() {
-        return (None, appended);
+/// A stand-in for the wrapped composer's line editor: DEL (`0x7f`) deletes one
+/// logical char; every other byte is UTF-8 text appended. Independent of how the
+/// edit bytes are built, so driving the real `PreviewCursor` output through it
+/// proves the preview ends up correct (the same shape as a readline/bash line
+/// editor; the real Claude composer is the human's manual smoke-test).
+#[derive(Default)]
+struct LineEditor {
+    chars: Vec<char>,
+}
+
+impl LineEditor {
+    fn apply(&mut self, bytes: &[u8]) {
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == 0x7f {
+                self.chars.pop();
+                i += 1;
+            } else {
+                let start = i;
+                while i < bytes.len() && bytes[i] != 0x7f {
+                    i += 1;
+                }
+                self.chars
+                    .extend(std::str::from_utf8(&bytes[start..i]).unwrap().chars());
+            }
+        }
     }
-    let joined = new.join(" ");
-    let delta = if start == 0 {
-        joined
-    } else {
-        format!(" {joined}")
-    };
-    (Some(Frame::Live(delta)), words.len())
+
+    fn text(&self) -> String {
+        self.chars.iter().collect()
+    }
 }
 
 #[test]
-fn live_preview_appends_growing_text_then_reconciles_to_the_batch_accurate_transcript() {
-    // The dictator speaks "run why do tool"; the live lane sees it grow word by
-    // word (raw, uncorrected), and the batch reconcile corrects the jargon.
+fn live_preview_self_edits_in_place_then_reconciles_to_the_batch_accurate_transcript() {
+    // The dictator speaks "run why do tool". Whisper first mishears the tail
+    // ("wide"), then firms it up. The live lane revises in place; the stable
+    // prefix never flickers; the batch reconcile corrects the jargon.
     let wav = tmp("happy");
     write_wav(&wav, 32_000); // 1 s — well over the min-duration decode floor
     assert!(wav_duration(&wav).unwrap() >= MIN);
 
-    let live = ["run", "run why", "run why do", "run why do tool"];
+    // d1 mishears "wide"; d2 corrects it to "why"; then it grows and settles.
+    let live = [
+        "run wide",
+        "run why",
+        "run why do",
+        "run why do tool",
+        "run why do tool",
+    ];
     let mut bodies: Vec<String> = live.iter().map(|t| json(t)).collect();
-    bodies.push(json("run why do tool")); // the final batch request
+    bodies.push(json("run why do tool")); // the final batch reconcile request
     let (host, port, server) = scripted_whisper(bodies);
 
     // The active wrapper sink, bound at trigger time.
@@ -158,38 +179,62 @@ fn live_preview_appends_growing_text_then_reconciles_to_the_batch_accurate_trans
     let bound = registry.active();
     assert_eq!(bound, Some(wrapper));
 
-    // Self-paced live loop: each decode pushes only the newly-grown tail.
-    let mut appended = 0usize;
-    let mut preview = String::new();
-    for _ in 0..live.len() {
-        let (frame, next) = live_pass(&host, port, &wav, appended);
-        appended = next;
-        if let Some(Frame::Live(delta)) = frame {
-            // Each live frame round-trips through the wire protocol...
-            assert_eq!(
-                Frame::parse(&Frame::Live(delta.clone()).encode()).unwrap(),
-                Frame::Live(delta.clone())
-            );
-            // ...and the wrapper appends it (no trailing newline) into the prompt.
-            preview.push_str(&delta);
-        }
-    }
-    // The live preview that landed in the prompt is the raw, uncorrected text,
-    // grown append-only with no re-typing.
-    assert_eq!(preview, "run why do tool");
+    // Daemon side: the commit engine. Wrapper side: the preview cursor + the
+    // stand-in line editor. Each decode flows daemon → Frame::LiveEdit (wire
+    // round-trip) → wrapper, exactly like the two real processes.
+    let mut engine = CommitEngine::new();
+    let mut cursor = PreviewCursor::new();
+    let mut editor = LineEditor::default();
 
-    // Finalize: the batch reconcile over the complete capture, corrected.
+    let mut committed_lens = Vec::new();
+    let want_preview = [
+        "run wide",
+        "run why",
+        "run why do",
+        "run why do tool",
+        "run why do tool",
+    ];
+    for (i, _) in live.iter().enumerate() {
+        let body = post_inference(&host, port, &wav, &live_params()).unwrap();
+        let text = parse_transcript(&body).unwrap();
+        let words: Vec<&str> = text.split_whitespace().collect();
+
+        let edit = engine.observe(&words);
+        committed_lens.push(engine.committed_len());
+
+        // Daemon encodes a Frame::LiveEdit; the wrapper parses and applies it.
+        let frame = Frame::LiveEdit {
+            committed: edit.committed,
+            tail: edit.tail,
+        };
+        let Ok(Frame::LiveEdit { committed, tail }) = Frame::parse(&frame.encode()) else {
+            panic!("a LiveEdit frame must round-trip");
+        };
+        editor.apply(&cursor.apply_edit(&committed, &tail));
+
+        // The preview in the prompt matches the (raw, uncorrected) hypothesis.
+        assert_eq!(editor.text(), want_preview[i], "preview after decode {i}");
+    }
+
+    // The committed prefix only ever grew (LocalAgreement-2, monotone, no retract).
+    assert!(
+        committed_lens.windows(2).all(|w| w[1] >= w[0]),
+        "committed prefix must grow monotonically: {committed_lens:?}",
+    );
+    assert_eq!(engine.committed_text(), "run why do tool");
+    // The mishear "wide" never entered the committed prefix.
+    assert!(!engine.committed_text().contains("wide"));
+
+    // Finalize: the batch reconcile over the complete capture, corrected, then the
+    // wrapper erases the whole preview and types the Transcript — no double-typing.
     let body = post_inference(&host, port, &wav, &batch_params()).unwrap();
     server.join().unwrap();
     let raw = parse_transcript(&body).unwrap();
     let dur = wav_duration(&wav).unwrap();
     let reconciled = finalize_transcript(&raw, dur, MIN, &corrections()).unwrap();
-    assert_eq!(
-        reconciled, "run ydotool",
-        "the reconcile applies the dictionary"
-    );
+    assert_eq!(reconciled, "run ydotool");
 
-    // The final Transcript flows through Delivery against the trigger-time binding.
+    // The final Transcript routes through Delivery against the trigger-time binding.
     let mut queue = DeliveryQueue::new();
     let seq = queue.enqueue();
     queue.set_ready(seq, reconciled.clone());
@@ -202,18 +247,21 @@ fn live_preview_appends_growing_text_then_reconciles_to_the_batch_accurate_trans
         Route::Wrapper(id) => assert_eq!(id, wrapper, "delivered to the bound wrapper"),
         other => panic!("expected a wrapper route, got {other:?}"),
     }
-    // The delivered finalize text carries no trailing Enter.
-    let injected = ghostty_voice_core::pty::injection_bytes(&text);
-    assert!(!injected.ends_with(b"\n") && !injected.ends_with(b"\r"));
+    // The wrapper applies the finalize: the rough preview is replaced wholesale.
+    editor.apply(&cursor.finalize(&text));
+    assert_eq!(
+        editor.text(),
+        "run ydotool",
+        "preview replaced by the reconcile"
+    );
 
     let _ = std::fs::remove_file(&wav);
 }
 
 #[test]
 fn with_no_wrapper_registered_the_live_preview_no_ops_and_the_final_is_held() {
-    // No wrapper registered: there is no active sink, so the live lane has nowhere
-    // to push (it no-ops) and the final Transcript binds to None ⇒ Held-for-replay,
-    // exactly like a batch utterance.
+    // No wrapper registered: no active sink, so the live lane has nowhere to push
+    // (it no-ops) and the final Transcript binds to None ⇒ Held-for-replay.
     let wav = tmp("held");
     write_wav(&wav, 32_000);
 
@@ -226,19 +274,17 @@ fn with_no_wrapper_registered_the_live_preview_no_ops_and_the_final_is_held() {
     let bound = registry.active();
     assert_eq!(bound, None, "no wrapper ⇒ no active sink");
 
-    // The decode loop still runs (capture is independent of any wrapper), but with
-    // no active sink there is nothing to push the live preview to.
-    let mut appended = 0usize;
+    // The decode loop + commit engine still run (capture is independent of any
+    // wrapper), but with no active sink there is nothing to push the preview to.
+    let mut engine = CommitEngine::new();
     let mut pushed = 0usize;
     for _ in 0..live.len() {
-        let (frame, next) = live_pass(&host, port, &wav, appended);
-        appended = next;
-        if frame.is_some() {
-            // A real daemon would skip the send when there is no live sender; here
-            // we just count that there is no sink to deliver to.
-            if bound.is_some() {
-                pushed += 1;
-            }
+        let body = post_inference(&host, port, &wav, &live_params()).unwrap();
+        let text = parse_transcript(&body).unwrap();
+        let words: Vec<&str> = text.split_whitespace().collect();
+        let _edit = engine.observe(&words);
+        if bound.is_some() {
+            pushed += 1;
         }
     }
     assert_eq!(pushed, 0, "the live preview no-ops with no wrapper");

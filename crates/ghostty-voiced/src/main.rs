@@ -120,10 +120,13 @@ struct StreamingSession {
     /// The **Delivery sink** bound at trigger time — where the live preview is
     /// pushed and the final Transcript is routed (Held-for-replay if it dies).
     bound: Option<SinkId>,
-    /// How many whitespace-split words of the running hypothesis have already been
-    /// pushed as live preview. The append-only preview pushes only the new tail
-    /// each decode (the rough-preview extension of ADR-0002).
-    appended_words: usize,
+    /// The LocalAgreement-2 commit engine: successive decodes feed it and it
+    /// splits the settled stable prefix from the unstable tail (the rough-preview
+    /// extension of ADR-0002).
+    engine: ghostty_voice_core::streaming::CommitEngine,
+    /// The last unstable-tail rendering pushed to the wrapper, so an unchanged
+    /// re-decode that commits nothing is suppressed (no needless tail flicker).
+    last_tail: String,
 }
 
 impl Daemon {
@@ -1038,7 +1041,8 @@ fn start_streaming(d: &mut Daemon, daemon: &Arc<Mutex<Daemon>>) -> Result<()> {
         wav,
         recorder: Some(child),
         bound,
-        appended_words: 0,
+        engine: ghostty_voice_core::streaming::CommitEngine::new(),
+        last_tail: String::new(),
     });
     play_start_cue(&d.config);
     info!("streaming dictation {generation} started");
@@ -1097,7 +1101,7 @@ async fn drive_streaming(daemon: Arc<Mutex<Daemon>>, generation: u64) {
         if audio >= min_duration
             && let Some(text) = decode_live(&config, &wav).await
         {
-            push_live_preview(&daemon, generation, &text, live_sender.as_ref()).await;
+            push_live_edit(&daemon, generation, &text, live_sender.as_ref()).await;
         }
 
         if !sox_running {
@@ -1143,17 +1147,18 @@ async fn decode_live(config: &Config, wav: &Path) -> Option<String> {
     }
 }
 
-/// Push the newly-grown tail of `text` as a live-preview append to the bound
-/// wrapper. Append-only this slice: only the words past what was already pushed
-/// are sent (a leading space joins them to the existing preview), so the prompt
-/// grows without re-typing. A hypothesis that shrank pushes nothing.
-async fn push_live_preview(
+/// Feed `text` (one decode's hypothesis) to the commit engine and push the
+/// resulting live-edit to the bound wrapper: the newly-confirmed words to lock
+/// onto the stable prefix and the current unstable tail to rewrite in place. An
+/// unchanged re-decode that commits nothing and leaves the tail untouched is
+/// suppressed so the tail does not needlessly flicker.
+async fn push_live_edit(
     daemon: &Arc<Mutex<Daemon>>,
     generation: u64,
     text: &str,
     sender: Option<&mpsc::UnboundedSender<String>>,
 ) {
-    let delta = {
+    let frame = {
         let mut d = daemon.lock().await;
         let Some(s) = d.streaming.as_mut() else {
             return;
@@ -1162,21 +1167,19 @@ async fn push_live_preview(
             return;
         }
         let words: Vec<&str> = text.split_whitespace().collect();
-        let start = s.appended_words.min(words.len());
-        let new_words = &words[start..];
-        if new_words.is_empty() {
+        let edit = s.engine.observe(&words);
+        // Nothing committed and the same tail as last time ⇒ no observable change.
+        if edit.committed.is_empty() && edit.tail == s.last_tail {
             return;
         }
-        s.appended_words = words.len();
-        let joined = new_words.join(" ");
-        if start == 0 {
-            joined
-        } else {
-            format!(" {joined}")
+        s.last_tail = edit.tail.clone();
+        Frame::LiveEdit {
+            committed: edit.committed,
+            tail: edit.tail,
         }
     };
     if let Some(tx) = sender {
-        let _ = tx.send(format!("{}\n", Frame::Live(delta).encode()));
+        let _ = tx.send(format!("{}\n", frame.encode()));
     }
 }
 

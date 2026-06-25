@@ -19,6 +19,7 @@ pub mod pty;
 pub mod queue;
 pub mod session;
 pub mod sink;
+pub mod streaming;
 pub mod strip;
 pub mod supervisor;
 pub mod transcript;
